@@ -1,0 +1,40 @@
+# ===== Environment Variables (含密钥，绝对不能推送) =====
+.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== Virtual Environment =====
+venv/
+.venv/
+env/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Data (大文件/数据不推送) =====
+data/raw/
+data/eval/
+
+# ===== Docker Volumes =====
+mysql_data/
+redis_data/
+etcd_data/
+minio_data/
+milvus_data/
+
+# ===== Logs =====
+*.log

@@ -1,0 +1,257 @@
+"""
+MySQL 数据库存储 - 对话历史持久化
+使用 SQLAlchemy ORM
+"""
+import uuid
+from datetime import datetime
+from typing import List, Optional
+from sqlalchemy import create_engine, Column, String, Text, Integer, DateTime, JSON, ForeignKey, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session, relationship
+
+from app.config.settings import settings
+
+Base = declarative_base()
+
+
+# ===== 数据库模型 =====
+class Conversation(Base):
+    """会话表"""
+    __tablename__ = "conversations"
+
+    id = Column(String(64), primary_key=True, comment="会话ID")
+    title = Column(String(200), default="新对话", comment="会话标题")
+    model_name = Column(String(50), nullable=False, comment="使用的模型")
+    created_at = Column(DateTime, default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+
+
+class Message(Base):
+    """消息表"""
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="消息ID")
+    conversation_id = Column(String(64), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(20), nullable=False, comment="角色")
+    content = Column(Text, nullable=False, comment="消息内容")
+    model_name = Column(String(50), nullable=True, comment="模型名称")
+    tokens_used = Column(Integer, default=0, comment="消耗token数")
+    retrieval_info = Column(JSON, nullable=True, comment="检索信息")
+    created_at = Column(DateTime, default=func.now(), comment="创建时间")
+
+    conversation = relationship("Conversation", back_populates="messages")
+
+
+class Document(Base):
+    """知识库文档表"""
+    __tablename__ = "documents"
+
+    id = Column(String(64), primary_key=True, comment="文档ID")
+    filename = Column(String(255), nullable=False, comment="文件名")
+    file_type = Column(String(20), nullable=False, comment="文件类型")
+    file_size = Column(Integer, default=0, comment="文件大小")
+    chunk_count = Column(Integer, default=0, comment="分块数")
+    status = Column(String(20), default="pending", comment="状态")
+    error_message = Column(Text, nullable=True, comment="错误信息")
+    created_at = Column(DateTime, default=func.now(), comment="上传时间")
+    processed_at = Column(DateTime, nullable=True, comment="处理完成时间")
+
+
+# ===== 数据库管理器 =====
+class DatabaseManager:
+    """MySQL 数据库管理器"""
+
+    def __init__(self):
+        self._engine = None
+        self._session_factory = None
+
+    def init_db(self):
+        """初始化数据库连接和表"""
+        if self._engine is None:
+            print(f"[Database] 连接 MySQL: {settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}")
+            self._engine = create_engine(
+                settings.mysql_url,
+                pool_size=10,
+                max_overflow=20,
+                pool_pre_ping=True,
+                echo=settings.DEBUG,
+            )
+            self._session_factory = sessionmaker(bind=self._engine)
+            Base.metadata.create_all(self._engine)
+            print("[Database] 数据库表创建完成")
+
+    def get_session(self) -> Session:
+        """获取数据库会话"""
+        if self._session_factory is None:
+            self.init_db()
+        return self._session_factory()
+
+    # ===== 会话操作 =====
+    def create_conversation(self, title: str, model_name: str) -> Conversation:
+        """创建新会话"""
+        session = self.get_session()
+        try:
+            conv = Conversation(
+                id=str(uuid.uuid4()),
+                title=title,
+                model_name=model_name,
+            )
+            session.add(conv)
+            session.commit()
+            session.refresh(conv)
+            return conv
+        finally:
+            session.close()
+
+    def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
+        """获取会话"""
+        session = self.get_session()
+        try:
+            return session.query(Conversation).filter_by(id=conversation_id).first()
+        finally:
+            session.close()
+
+    def list_conversations(self, limit: int = 20, offset: int = 0) -> List[Conversation]:
+        """获取会话列表"""
+        session = self.get_session()
+        try:
+            return (
+                session.query(Conversation)
+                .order_by(Conversation.updated_at.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            )
+        finally:
+            session.close()
+
+    def delete_conversation(self, conversation_id: str):
+        """删除会话（级联删除消息）"""
+        session = self.get_session()
+        try:
+            conv = session.query(Conversation).filter_by(id=conversation_id).first()
+            if conv:
+                session.delete(conv)
+                session.commit()
+        finally:
+            session.close()
+
+    # ===== 消息操作 =====
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        model_name: str = None,
+        tokens_used: int = 0,
+        retrieval_info: dict = None,
+    ) -> Message:
+        """添加消息"""
+        session = self.get_session()
+        try:
+            msg = Message(
+                conversation_id=conversation_id,
+                role=role,
+                content=content,
+                model_name=model_name,
+                tokens_used=tokens_used,
+                retrieval_info=retrieval_info,
+            )
+            session.add(msg)
+            session.commit()
+            msg_id = msg.id
+
+            # 更新会话的更新时间
+            conv = session.query(Conversation).filter_by(id=conversation_id).first()
+            if conv:
+                conv.updated_at = datetime.now()
+                session.commit()
+
+            # 重新查询返回完整的消息对象
+            return session.query(Message).filter_by(id=msg_id).first()
+        finally:
+            session.close()
+
+    def get_messages(self, conversation_id: str, limit: int = 50) -> List[Message]:
+        """获取会话消息列表"""
+        session = self.get_session()
+        try:
+            return (
+                session.query(Message)
+                .filter_by(conversation_id=conversation_id)
+                .order_by(Message.created_at.asc())
+                .limit(limit)
+                .all()
+            )
+        finally:
+            session.close()
+
+    def get_message_count(self, conversation_id: str) -> int:
+        """获取会话消息数量"""
+        session = self.get_session()
+        try:
+            return session.query(Message).filter_by(conversation_id=conversation_id).count()
+        finally:
+            session.close()
+
+    # ===== 文档操作 =====
+    def add_document(self, doc_id: str, filename: str, file_type: str, file_size: int) -> Document:
+        """添加文档记录"""
+        session = self.get_session()
+        try:
+            doc = Document(
+                id=doc_id,
+                filename=filename,
+                file_type=file_type,
+                file_size=file_size,
+            )
+            session.add(doc)
+            session.commit()
+            return doc
+        finally:
+            session.close()
+
+    def update_document_status(self, doc_id: str, status: str, chunk_count: int = 0, error_message: str = None):
+        """更新文档状态"""
+        session = self.get_session()
+        try:
+            doc = session.query(Document).filter_by(id=doc_id).first()
+            if doc:
+                doc.status = status
+                doc.chunk_count = chunk_count
+                doc.error_message = error_message
+                if status == "completed":
+                    doc.processed_at = datetime.now()
+                session.commit()
+        finally:
+            session.close()
+
+    def list_documents(self, limit: int = 20, offset: int = 0) -> List[Document]:
+        """获取文档列表"""
+        session = self.get_session()
+        try:
+            return (
+                session.query(Document)
+                .order_by(Document.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            )
+        finally:
+            session.close()
+
+    def ping(self) -> bool:
+        """检查数据库连接"""
+        try:
+            session = self.get_session()
+            session.execute(func.now())
+            session.close()
+            return True
+        except Exception:
+            return False
+
+
+# 全局实例
+db_manager = DatabaseManager()
