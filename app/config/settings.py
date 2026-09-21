@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     # 这个开关必须显式指定, 不能靠"值落在哪判断" —— 那样在 0 处不连续。
     # 若实际返回越界值, 运行时会打印 ERROR 日志提示改这里。
     RERANK_SCORE_IS_LOGIT: bool = False
+    # 加载精度: float32(默认, 精度最高但内存占用最大) / float16 / bfloat16。
+    # 为什么需要这个旋钮: bge-reranker-base 以 float32 加载约需 1GB 常驻内存,
+    # 曾实测导致开发机 OOM(N-9, 见 docs/06-P0测试执行报告.md §3)。float16/bfloat16
+    # 直接把权重内存占用砍半, 是"内存吃紧但不想换模型"时的第一档缓解手段。
+    # 注意: CPU 上 float16 的部分算子支持有限, 若报错可改用 bfloat16 或退回 float32。
+    RERANK_TORCH_DTYPE: str = "float32"
+    # 推理后端: torch(默认) / onnx / openvino。
+    # onnx/openvino 后端配合量化模型可以显著降低内存与提升 CPU 推理速度,
+    # 但需要模型本身已导出为对应格式(或安装 optimum 现场导出), 不是换个字符串就生效。
+    RERANK_BACKEND: str = "torch"
 
     # ===== Agentic RAG Settings =====
     REFLECTION_THRESHOLD: float = 0.6

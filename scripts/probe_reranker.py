@@ -51,7 +51,24 @@ def mem_report(tag: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="重排器探针")
     parser.add_argument("--skip-load", action="store_true", help="只测环境, 不加载模型")
+    parser.add_argument(
+        "--dtype",
+        choices=["float32", "float16", "bfloat16"],
+        default=None,
+        help="临时覆盖 RERANK_TORCH_DTYPE, 用于实测不同精度的内存占用差异(不改动 .env)",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["torch", "onnx", "openvino"],
+        default=None,
+        help="临时覆盖 RERANK_BACKEND",
+    )
     args = parser.parse_args()
+
+    if args.dtype:
+        settings.RERANK_TORCH_DTYPE = args.dtype
+    if args.backend:
+        settings.RERANK_BACKEND = args.backend
 
     print("=" * 70)
     print("重排器探针")
@@ -59,7 +76,16 @@ def main() -> int:
     print(f"  RERANK_MODEL            = {settings.RERANK_MODEL}")
     print(f"  RERANK_CANDIDATE_LIMIT  = {settings.RERANK_CANDIDATE_LIMIT}")
     print(f"  RERANK_SCORE_IS_LOGIT   = {settings.RERANK_SCORE_IS_LOGIT}")
+    print(f"  RERANK_TORCH_DTYPE      = {settings.RERANK_TORCH_DTYPE}")
+    print(f"  RERANK_BACKEND          = {settings.RERANK_BACKEND}")
     print(f"  ENABLE_RERANK           = {settings.ENABLE_RERANK}")
+    print()
+    print(
+        "  提示: 若模型已在本地缓存, 建议加环境变量 HF_HUB_OFFLINE=1 运行本脚本。\n"
+        "        否则 sentence-transformers 每次都会先发 HEAD 请求去 huggingface.co\n"
+        "        核对文件是否有更新, 网络不通时会重试 5 次(每次退避翻倍),\n"
+        "        表现为'卡住几十秒后才有输出', 容易被误判成加载本身很慢。"
+    )
     print()
 
     # 模型是否已经在本地 —— 这条能区分"下载失败"和"内存不足",

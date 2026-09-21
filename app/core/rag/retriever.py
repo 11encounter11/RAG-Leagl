@@ -19,12 +19,85 @@ from typing import Any, Iterable, List, Optional, Sequence
 
 import numpy as np
 from llama_index.core import VectorStoreIndex
-from llama_index.core.schema import NodeWithScore, TextNode
+from llama_index.core.schema import MetadataMode, NodeWithScore, TextNode
 from rank_bm25 import BM25L
 
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+class _CrossEncoderReranker:
+    """对 `sentence_transformers.CrossEncoder` 的轻量封装。
+
+    为什么不直接用 llama-index 的 `SentenceTransformerRerank`:
+        它的构造函数不暴露 `model_kwargs` / `backend` 两个参数, 而这两个参数
+        正是控制重排器**常驻内存占用**的唯一旋钮(加载精度、推理后端)。
+        N-9 里 bge-reranker-base 以 float32 加载约 1GB 常驻内存, 曾把开发机
+        逼到 OOM; 想把权重精度降到 float16/bfloat16 来砍半内存, 就必须绕过
+        llama-index 这层封装, 直接构造 CrossEncoder。
+    对外仍保持 `postprocess_nodes(nodes, query_str=...)` 这一签名,
+    与 `SentenceTransformerRerank` 一致, 单元测试里的 `_FakeReranker` 无需改动。
+    """
+
+    def __init__(
+        self,
+        model: str,
+        top_n: int,
+        *,
+        backend: str = "torch",
+        torch_dtype: str = "float32",
+        keep_retrieval_score: bool = True,
+    ) -> None:
+        from sentence_transformers import CrossEncoder
+
+        self.model = model
+        self.top_n = top_n
+        self.keep_retrieval_score = keep_retrieval_score
+
+        model_kwargs: dict[str, Any] = {}
+        if backend == "torch" and torch_dtype != "float32":
+            import torch
+
+            dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16}
+            if torch_dtype not in dtype_map:
+                raise ValueError(
+                    f"不支持的 RERANK_TORCH_DTYPE={torch_dtype!r}, 可选: float32/float16/bfloat16"
+                )
+            model_kwargs["torch_dtype"] = dtype_map[torch_dtype]
+
+        self._model = CrossEncoder(
+            model,
+            backend=backend,
+            model_kwargs=model_kwargs or None,
+            trust_remote_code=True,
+        )
+        self.torch_dtype = torch_dtype
+        self.backend = backend
+
+    def postprocess_nodes(
+        self,
+        nodes: List[NodeWithScore],
+        query_str: Optional[str] = None,
+    ) -> List[NodeWithScore]:
+        if query_str is None:
+            raise ValueError("缺少 query_str")
+        if not nodes:
+            return []
+
+        pairs = [
+            (query_str, node.node.get_content(metadata_mode=MetadataMode.EMBED))
+            for node in nodes
+        ]
+        scores = self._model.predict(pairs)
+        assert len(scores) == len(nodes)
+
+        for node, score in zip(nodes, scores):
+            if self.keep_retrieval_score:
+                node.node.metadata["retrieval_score"] = node.score
+            node.score = float(score)
+
+        return sorted(nodes, key=lambda x: -(x.score or 0.0))[: self.top_n]
 
 
 # ============================================================
@@ -344,17 +417,24 @@ class HybridRetriever:
         if self._reranker is not None or self._reranker_failed:
             return
         try:
-            # 类名是 SentenceTransformerRerank(没有 er 结尾)。
-            # 原实现写成 SentenceTransformerReranker, ImportError 又被 try/except
-            # 吞掉只打了 print, 结果重排功能从未生效过 —— 所以这里失败必须 error 级留痕。
-            from llama_index.core.postprocessor import SentenceTransformerRerank
-
-            self._reranker = SentenceTransformerRerank(
+            # 早期实现直接调用 llama_index.core.postprocessor.SentenceTransformerRerank,
+            # 曾因类名拼写错误(SentenceTransformerReranker, 多了 er)被 try/except 静默吞掉,
+            # 导致重排功能从未真正生效过 —— 这条教训是"加载失败必须 error 级留痕"的由来。
+            # 现在改用自研的 _CrossEncoderReranker 封装(接口不变), 额外支持
+            # RERANK_TORCH_DTYPE / RERANK_BACKEND 两个降低内存占用的旋钮(D-2, N-9)。
+            self._reranker = _CrossEncoderReranker(
                 model=settings.RERANK_MODEL,
                 top_n=settings.RERANK_CANDIDATE_LIMIT,
+                backend=settings.RERANK_BACKEND,
+                torch_dtype=settings.RERANK_TORCH_DTYPE,
                 keep_retrieval_score=True,
             )
-            logger.info("[HybridRetriever] 重排器加载完成: %s", settings.RERANK_MODEL)
+            logger.info(
+                "[HybridRetriever] 重排器加载完成: %s (backend=%s, dtype=%s)",
+                settings.RERANK_MODEL,
+                settings.RERANK_BACKEND,
+                settings.RERANK_TORCH_DTYPE,
+            )
         except Exception as exc:  # noqa: BLE001
             self._reranker_failed = True
             logger.error(

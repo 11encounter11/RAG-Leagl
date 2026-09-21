@@ -353,3 +353,57 @@ def test_format_citation_label_degrades_gracefully_for_unknown_metadata():
     label = format_citation_label({}, 3)
     assert label.startswith("[3]")
     assert "未知来源" in label
+
+
+# ============================================================
+# D-2: 重排模型可配置化(RERANK_TORCH_DTYPE / RERANK_BACKEND)
+# ============================================================
+
+
+def test_cross_encoder_reranker_rejects_unknown_dtype_before_loading_model():
+    """非法 dtype 必须在真正加载 1GB 模型之前就报错。
+
+    否则错误只会在 CrossEncoder 内部深处抛出, 排查成本高; 而且如果先下载/
+    加载再报错, 在内存吃紧的机器上(N-9)这一步本身就可能把机器打挂。
+    """
+    from app.core.rag.retriever import _CrossEncoderReranker
+
+    with pytest.raises(ValueError, match="RERANK_TORCH_DTYPE"):
+        _CrossEncoderReranker(
+            model="BAAI/bge-reranker-base",
+            top_n=5,
+            torch_dtype="int8",  # 不在 float32/float16/bfloat16 之列
+        )
+
+
+def test_cross_encoder_reranker_dtype_validation_skipped_for_non_torch_backend(monkeypatch):
+    """onnx/openvino 后端不走 torch 的 dtype 分支, 不应该被 torch_dtype 校验拦住。
+
+    刻意用 monkeypatch 替换掉真正的 CrossEncoder, 而不是传一个"不存在的模型名"
+    去让它自然报错 —— 后者会触发 sentence-transformers 去 huggingface.co 发 HEAD
+    请求核对文件, 网络不通时会重试若干次(每次退避翻倍), 单元测试不该有这种
+    几十秒的卡顿, 更不该依赖网络。
+    """
+    import sentence_transformers
+
+    from app.core.rag.retriever import _CrossEncoderReranker
+
+    captured_kwargs = {}
+
+    class _StubCrossEncoder:
+        def __init__(self, model_name_or_path, **kwargs):
+            captured_kwargs["model"] = model_name_or_path
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr(sentence_transformers, "CrossEncoder", _StubCrossEncoder)
+
+    reranker = _CrossEncoderReranker(
+        model="any/model-name",
+        top_n=5,
+        backend="onnx",
+        torch_dtype="int8",  # 若 backend!=torch 时仍校验 dtype, 这里会先抛 ValueError
+    )
+    assert reranker.backend == "onnx"
+    assert captured_kwargs["backend"] == "onnx"
+    # backend != torch 时不应该往 model_kwargs 里塞 torch_dtype
+    assert captured_kwargs.get("model_kwargs") is None
