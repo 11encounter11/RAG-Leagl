@@ -25,9 +25,14 @@ env/
 .DS_Store
 Thumbs.db
 
-# ===== Data (大文件/数据不推送) =====
+# ===== Data =====
+# data/raw/: 原始语料, 体积大且可重新下载, 不入库
 data/raw/
-data/eval/
+# data/eval/: **必须入库** —— 评测集是人工标注的标准答案, 属于源代码级资产,
+# 不是"可再生的数据"。它被忽略过一次, 结果是 T-18"纳入 git 版本管理"
+# 这条验收标准实际未达成, 而 git status 看起来是干净的。
+# 只有运行产物 reports/ 忽略。
+data/eval/reports/
 
 # ===== Docker Volumes =====
 mysql_data/

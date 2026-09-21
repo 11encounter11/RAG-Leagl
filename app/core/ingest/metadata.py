@@ -111,3 +111,99 @@ def build_section_extra(
 def missing_required_fields(metadata: dict[str, Any]) -> list[str]:
     """返回缺失的必填字段(用于测试与入库前自检)。"""
     return [field for field in REQUIRED_CHUNK_FIELDS if field not in metadata]
+
+
+# ============================================================
+# Milvus 标量字段声明
+# ============================================================
+# 为什么必须显式声明(测试期发现, 记为 N-5):
+#   被测版本 llama-index-vector-stores-milvus==1.2.0 的存储布局是
+#   `id / doc_id / text / embedding` —— **元数据不会被自动存下来**。
+#   如果不声明 scalar_field_names, 那么 article_no / validity_status /
+#   tenant_id 这些字段在入库后就丢了, 引用溯源、时效过滤、租户隔离
+#   全部静默失效(检索还能返回文本, 所以你甚至看不出错了)。
+#
+# 声明之后还带来一个额外好处: 这些字段成为真实的 Milvus 标量字段,
+# 于是"把时效/租户过滤下推到查询表达式"才有了实现基础。
+#
+# 类型用字符串表示, 不在契约层 import pymilvus —— 契约不该依赖具体存储实现,
+# 由 vector_store.py 负责把字符串映射成 DataType。
+MILVUS_SCALAR_FIELDS: dict[str, str] = {
+    # ---- 文档级 ----
+    "tenant_id": "VARCHAR",
+    "kb_id": "VARCHAR",
+    "document_id": "VARCHAR",
+    "doc_type": "VARCHAR",
+    "filename": "VARCHAR",
+    "source_file": "VARCHAR",
+    # ---- 切分留痕 ----
+    "chunk_strategy": "VARCHAR",
+    "strategy_confidence": "VARCHAR",
+    "structure_detected": "VARCHAR",
+    "chunk_index": "INT64",
+    "section_seq": "INT64",
+    # ---- 时效与地域(P1 接真实数据, 现在先占位) ----
+    "validity_status": "VARCHAR",
+    "version_id": "VARCHAR",
+    "version_label": "VARCHAR",
+    "effective_date": "VARCHAR",
+    "expiry_date": "VARCHAR",
+    "region_code": "VARCHAR",
+    # ---- 结构坐标 ----
+    "article_no": "VARCHAR",
+    "article_no_norm": "INT64",
+    "chapter_path": "VARCHAR",
+    "section_path": "VARCHAR",
+    "clause_no": "VARCHAR",
+    "question": "VARCHAR",
+    "law_name": "VARCHAR",
+    "part_index": "INT64",
+    "part_total": "INT64",
+    # ---- 展示用干净原文 ----
+    # node.text 里带着检索前缀("《法名》> 章节 > 条文号"), 不能直接拿去展示;
+    # 干净的原文必须一起入库, 否则引用溯源弹出来的是带前缀的串。
+    "display_text": "VARCHAR",
+}
+
+# 这些字段名被 Milvus 的固定 schema 占用, 不能再声明为标量字段
+MILVUS_RESERVED_FIELDS: tuple[str, ...] = ("id", "doc_id", "text", "embedding")
+
+
+def scalar_default(field_type: str) -> Any:
+    """标量字段的默认值。Milvus 的字段默认不可为 NULL, 缺了会被拒。"""
+    if field_type == "INT64":
+        return 0
+    if field_type == "BOOL":
+        return False
+    if field_type == "DOUBLE":
+        return 0.0
+    return ""
+
+
+def ensure_scalar_defaults(metadata: dict[str, Any]) -> dict[str, Any]:
+    """补齐并校正所有已声明的 Milvus 标量字段。
+
+    Milvus 插入时要求每个已声明字段都出现且类型匹配, 缺一个整批就失败;
+    而我们的元数据里有大量可选字段(FAQ 没有条文号、P0 没有版本号),
+    所以必须在入库前统一补齐, 不能指望调用方每次都填全。
+    """
+    result = dict(metadata)
+    for field, field_type in MILVUS_SCALAR_FIELDS.items():
+        value = result.get(field)
+        if value is None:
+            result[field] = scalar_default(field_type)
+            continue
+        if field_type == "INT64":
+            try:
+                result[field] = int(value)
+            except (TypeError, ValueError):
+                result[field] = 0
+        elif field_type == "VARCHAR" and not isinstance(value, str):
+            result[field] = str(value)
+    return result
+
+
+def scalar_fields_for_milvus() -> tuple[list[str], list[str]]:
+    """返回 (字段名列表, 类型名列表), 顺序严格对应。"""
+    names = list(MILVUS_SCALAR_FIELDS.keys())
+    return names, [MILVUS_SCALAR_FIELDS[name] for name in names]

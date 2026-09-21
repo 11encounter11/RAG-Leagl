@@ -69,9 +69,13 @@ class Settings(BaseSettings):
 
     # ===== Embedding Model =====
     EMBEDDING_MODEL_NAME: str = "embedding-3"
-    # 智谱 embedding-3 的向量维度。向量库建集合时要用, 所以必须可配 ——
-    # 写死在 vector_store.py 里的话, 换模型就得改代码。
-    EMBEDDING_DIM: int = 2048
+    # 向量维度。**0 表示自动探测**(从嵌入模型实际输出测量)。
+    # 为什么不再写死: 原代码硬编码 2048, 而智谱 embedding-3 实际返回
+    # **1024** 维 —— 这个不一致只在真正插入 Milvus 时才暴露
+    # (MilvusException: the dim of field data is not equal to schema dim),
+    # 而那时已经白跑了 107 次嵌入调用。自动探测 + 建库前校验可以避免这种浪费。
+    # 只有在需要"锁死"维度(例如多环境对齐)时才显式赋值。
+    EMBEDDING_DIM: int = 0
 
     # ===== Server =====
     HOST: str = "0.0.0.0"

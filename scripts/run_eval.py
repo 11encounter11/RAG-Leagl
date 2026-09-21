@@ -43,6 +43,7 @@ from app.core.eval import (  # noqa: E402
 )
 from app.core.eval.metrics import full_recall_at_k  # noqa: E402
 from app.core.ingest import ingest_text  # noqa: E402
+from app.config.settings import settings  # noqa: E402
 
 REPORT_DIR = Path("data/eval/reports")
 CORPUS_DIR = Path("data/raw")
@@ -103,13 +104,20 @@ def run_check() -> int:
 
 async def run_eval(top_k: int, mode: str) -> int:
     """执行检索评测。"""
-    from app.core.rag.retriever import HybridRetriever
     from app.services.rag_service import rag_service
 
-    rag_service.init_index(rebuild_bm25=False, preload_reranker=False)
+    # rebuild_bm25=True 是必须的: 否则 BM25 语料为空, 评出来的其实是
+    # "纯向量检索"而不是"混合检索", 而混合检索才是要评测的对象。
+    rag_service.init_index(rebuild_bm25=True, preload_reranker=False)
     if rag_service._retriever is None:
         print("检索器未就绪: 请确认 Milvus 已启动且知识库中已有数据。")
         return 2
+
+    print(
+        f"检索配置: 重排={'开' if settings.ENABLE_RERANK else '关'} "
+        f"Query改写={'开' if settings.ENABLE_QUERY_REWRITE else '关'} "
+        f"BM25语料={rag_service._retriever.bm25_size} 条"
+    )
 
     cases = load_dataset()
     per_question = []

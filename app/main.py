@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     rag_service.init_index()
 
     logger.info("可用模型: %s", llm_router.list_models())
-    logger.info("BM25 语料: %s 条", rag_service._retriever.bm25_size() if rag_service._retriever else 0)
+    logger.info("BM25 语料: %s 条", rag_service._retriever.bm25_size if rag_service._retriever else 0)
     logger.info("系统启动完成")
     logger.info("=" * 60)
 

@@ -1,0 +1,60 @@
+{
+  "created_at": "2026-09-21 12:26:44",
+  "source_report": "data/eval/reports/run-direct-20260921-122605.json",
+  "purpose": "P0 检索基线。后续任何检索相关改动都必须与这组数字比较, 不低于基线才算通过(门禁 C)。",
+  "config": {
+    "mode": "direct",
+    "top_k": 5,
+    "rerank": false,
+    "query_rewrite": false,
+    "note": "重排关闭(环境内存不足无法加载 Cross-Encoder)、Query 改写关闭(纯检索评测不含 LLM)。BM25 已启用, 即真正的向量+BM25+RRF 混合检索基线。"
+  },
+  "corpus": {
+    "documents": 1,
+    "file": "data/raw/劳动法.txt",
+    "articles": 107,
+    "chunks": 107,
+    "collection": "knowledge_base",
+    "embedding_model": "embedding-3 (智谱, 1024 维)"
+  },
+  "metrics": {
+    "recall_at_k": 0.9722,
+    "full_recall_at_k": 0.8889,
+    "mrr": 0.8449,
+    "ndcg_at_k": 0.8361,
+    "precision_at_k": 0.2889,
+    "refusal_accuracy": 0.0
+  },
+  "by_kind": {
+    "colloquial": {
+      "n": 14,
+      "recall": 0.9286,
+      "mrr": 0.7024,
+      "ndcg": 0.7116
+    },
+    "compound": {
+      "n": 2,
+      "recall": 1.0,
+      "mrr": 1.0,
+      "ndcg": 0.897
+    },
+    "out_of_scope": {
+      "n": 4,
+      "recall": 0.0,
+      "mrr": 0.0,
+      "ndcg": 0.0
+    },
+    "term": {
+      "n": 18,
+      "recall": 1.0,
+      "mrr": 0.963,
+      "ndcg": 0.9395
+    },
+    "validity": {
+      "n": 2,
+      "recall": 1.0,
+      "mrr": 0.625,
+      "ndcg": 0.7153
+    }
+  }
+}
