@@ -26,13 +26,35 @@ class ChatRequest(BaseModel):
 
 
 class SourceInfo(BaseModel):
-    """来源引用信息"""
+    """来源引用信息。
+
+    与 `app/core/generate/citation.py::build_sources` 的输出**必须**逐字段对齐 ——
+    两边不一致的表现是"引用列表字段静默丢失", 而且不报错。改任何一边都要同时改另一边。
+    """
     index: int
-    filename: str
-    sheet: Optional[str] = ""
-    row: Optional[str] = ""
+    # 前端凭 node_id 调 /api/knowledge/chunks/{node_id} 拉取权威原文
+    node_id: str = ""
+    document_id: str = ""
+    doc_type: str = ""
+    law_name: str = ""
+    filename: str = "未知来源"
+    article_no: str = ""
+    article_no_norm: int = 0
+    chapter_path: str = ""
+    clause_no: str = ""
+    validity_status: str = ""
+    validity_label: str = ""
+    version_label: str = ""
+    region_code: str = ""
+    sheet: str = ""
+    row: str = ""
+    # 同时给出原始分与归一化分, 便于在界面上直接观察阈值该定在哪里
+    score_raw: float = 0.0
+    score_normalized: float = 0.0
     score: float = 0.0
+    search_preview: str = ""
     text_preview: str = ""
+    text: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -47,6 +69,9 @@ class ChatResponse(BaseModel):
     sources: List[SourceInfo] = []
     workflow_steps: List[str] = []
     reflection_score: Optional[float] = None
+    reflection_note: Optional[str] = None
+    # 依据不足时的明确拒答标记(F2.8)
+    refused: bool = False
 
 
 class SSEChatResponse(BaseModel):
@@ -90,10 +115,18 @@ class DocumentInfo(BaseModel):
     """文档信息"""
     id: str
     filename: str
+    original_filename: Optional[str] = None
     file_type: str
     file_size: int
     chunk_count: int
     status: str
+    tenant_id: Optional[str] = None
+    kb_id: Optional[str] = None
+    doc_type: Optional[str] = None
+    doc_type_source: Optional[str] = None
+    chunk_strategy: Optional[str] = None
+    strategy_confidence: Optional[str] = None
+    structure_detected: Optional[str] = None
     created_at: datetime
     processed_at: Optional[datetime] = None
     error_message: Optional[str] = None
@@ -105,6 +138,11 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     status: str
     message: str
+    chunk_count: int = 0
+    doc_type: Optional[str] = None
+    chunk_strategy: Optional[str] = None
+    # 结构没识别出来、走了降级链 —— 必须让用户看见, 不能静默降级
+    degraded: bool = False
 
 
 # ===== 健康检查 =====

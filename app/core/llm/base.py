@@ -43,28 +43,13 @@ class BaseLLM(ABC):
     def build_system_prompt(self, context: str = "") -> Dict[str, str]:
         """
         构建系统提示词
-        Args:
-            context: RAG 检索到的上下文
-        Returns:
-            系统消息字典
+
+        委派给 app/core/generate/prompt.py —— 那里是提示词与引用格式的唯一定义处。
+
+        修复 T-01: 原来这里硬编码"必须引用参考资料，使用 [来源: 文件名] 格式标注"，
+        而检索上下文里给的编号是 "[1] 来源: xxx"，两边格式对不上。模型面对矛盾
+        的要求只能自己发明格式，于是引用既不稳定也无法被前端解析回片段。
         """
-        if context:
-            return {
-                "role": "system",
-                "content": (
-                    "你是一个智能知识库助手。请基于以下参考资料回答用户的问题。\n"
-                    "要求：\n"
-                    "1. 回答要准确、简洁、有条理\n"
-                    "2. 必须引用参考资料，使用 [来源: 文件名] 格式标注\n"
-                    "3. 如果参考资料中没有相关信息，请明确告知用户\n"
-                    "4. 不要编造参考资料中没有的内容\n\n"
-                    f"参考资料：\n{context}"
-                ),
-            }
-        return {
-            "role": "system",
-            "content": (
-                "你是一个智能知识库助手，擅长基于知识库中的文档回答用户的各类问题。"
-                "回答要准确、简洁，并在有依据时标注来源。"
-            ),
-        }
+        from app.core.generate.prompt import build_system_prompt
+
+        return build_system_prompt(context)

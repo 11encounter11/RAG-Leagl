@@ -1,7 +1,9 @@
 """
 FastAPI 应用入口
 """
+import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,29 +15,37 @@ from app.core.llm.router import llm_router
 from app.routers import chat, knowledge, conversation
 from app.models.schemas import HealthStatus
 
+# 统一日志配置。原来全靠 print, 出问题时既没有级别也没有模块名,
+# 排查只能靠猜 —— 这是 P0 里最便宜也最有价值的一处改动。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时
-    print("=" * 50)
-    print("法律智能问答系统 - 启动中...")
-    print("=" * 50)
+    logger.info("=" * 60)
+    logger.info("法律智能问答系统 - 启动中")
+    logger.info("=" * 60)
 
-    # 初始化数据库
     db_manager.init_db()
 
-    # 初始化 RAG 索引
+    # 初始化 RAG 索引: 启动期完成 BM25 语料重建与重排器预热(T-10 / T-11)。
+    # 这两件事原来都发生在"第一次请求"时, 前者导致关键词召回静默失效,
+    # 后者让第一个用户白等一两个 G 的模型加载。
     rag_service.init_index()
 
-    print(f"可用模型: {llm_router.list_models()}")
-    print("系统启动完成!")
-    print("=" * 50)
+    logger.info("可用模型: %s", llm_router.list_models())
+    logger.info("BM25 语料: %s 条", rag_service._retriever.bm25_size() if rag_service._retriever else 0)
+    logger.info("系统启动完成")
+    logger.info("=" * 60)
 
     yield
 
-    # 关闭时
-    print("系统关闭中...")
+    logger.info("系统关闭中...")
 
 
 # 创建 FastAPI 应用

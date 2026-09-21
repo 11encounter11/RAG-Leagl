@@ -1,212 +1,378 @@
 """
-RAG 服务 - 文档索引和检索的核心逻辑
-整合混合检索器和 LangGraph Agentic RAG 工作流
+RAG 服务 - 文档索引与检索的编排层
+
+职责边界:
+    本模块只做"编排": 取文件 -> 交给 ingest 模块解析 -> 入库 -> 建检索器。
+    解析与切分策略在 app/core/ingest/, 检索实现在 app/core/rag/retriever.py。
 """
+from __future__ import annotations
+
+import hashlib
+import logging
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.rag.loader import DocumentLoader, DocumentChunker
-from app.core.rag.embedder import Embedder
-from app.core.rag.vector_store import VectorStoreManager
-from app.core.rag.retriever import HybridRetriever
-from app.core.workflow.rag_workflow import get_rag_workflow, RAGWorkflowState
+from app.config.settings import settings
+from app.core.ingest import build_text_nodes, ingest_text
 from app.core.memory.db_store import db_manager
+from app.core.rag.embedder import Embedder
+from app.core.rag.loader import DocumentLoader
+from app.core.rag.retriever import HybridRetriever
+from app.core.rag.vector_store import VectorStoreManager
+from app.core.workflow.rag_workflow import RAGWorkflowState, get_rag_workflow, params_for_round
+
+logger = logging.getLogger(__name__)
+
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}
+
+
+def compute_content_hash(path: str | Path) -> str:
+    """文件内容哈希, 用于重复上传去重(F1.8)。"""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class RAGService:
-    """RAG 服务 - 负责文档索引和检索"""
+    """RAG 服务 - 文档索引和检索"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._loader = DocumentLoader()
-        self._chunker = DocumentChunker()
         self._embedder = Embedder()
         self._vector_store = VectorStoreManager(embed_model=self._embedder.embed_model)
         self._retriever: Optional[HybridRetriever] = None
-        self._all_nodes = []  # 存储所有文档节点（用于BM25索引）
+        # 文档级元数据默认值。P0 阶段先用固定租户, P2 接入认证后从 token 解析。
+        self.default_tenant_id = "platform"
+        self.default_kb_id = "public"
 
-    def init_index(self):
-        """初始化索引（服务启动时调用）"""
+    # ============================================================
+    # 生命周期
+    # ============================================================
+    def init_index(self, *, rebuild_bm25: bool = True, preload_reranker: bool = True) -> None:
+        """初始化索引(服务启动时调用)。
+
+        修复点:
+          T-10 原实现传入的 nodes 恒为空列表, 导致 BM25 语料永久为空 ——
+               重启后关键词召回整路失效, 而且不报错, 只是"检索变差了"。
+               现在启动期从 Milvus 读回正文重建语料。
+          T-11 重排器改为启动期预热, 不再让第一个用户等模型加载。
+        """
         try:
             self._vector_store.load_index()
-            # 注意：这里暂时不传递 nodes，BM25 索引会在索引文档时构建
-            self._retriever = HybridRetriever(
-                self._vector_store.get_index(),
-                nodes=self._all_nodes,
-                use_reranker=True,
-            )
-            print("[RAGService] 索引初始化完成")
-        except Exception as e:
-            print(f"[RAGService] 索引加载失败（可能还没有数据）: {e}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[RAGService] 索引加载失败(可能还没有数据): %s", exc)
 
-    def index_documents(self, dir_path: str) -> dict:
+        index = self._vector_store.get_index()
+        if index is None:
+            logger.info("[RAGService] 尚无索引, 等待首次上传文档")
+            return
+
+        self._retriever = HybridRetriever(index, nodes=[], use_reranker=settings.ENABLE_RERANK)
+
+        if rebuild_bm25:
+            count = self.rebuild_bm25_corpus()
+            logger.info("[RAGService] BM25 语料重建完成, 共 %d 条", count)
+        if preload_reranker:
+            ready = self._retriever.preload_reranker()
+            logger.info("[RAGService] 重排器预热: %s", "就绪" if ready else "未启用/失败")
+
+    def rebuild_bm25_corpus(self) -> int:
+        """从向量库读回正文, 重建 BM25 语料。"""
+        if self._retriever is None:
+            return 0
+        try:
+            records = self._vector_store.iter_chunks()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[RAGService] 读取向量库失败, BM25 语料为空: %s", exc)
+            return 0
+        if not records:
+            logger.warning("[RAGService] 向量库中没有可读正文, BM25 将不可用")
+            return 0
+        return self._retriever.set_bm25_corpus_from_records(records)
+
+    def _rebuild_retriever(self) -> None:
+        """索引内容变化后重建检索器。
+
+        注意: 这里换的是 self._retriever。工作流不再持有 retriever(见 T-07),
+        所以换实例之后新文档立刻可被 agentic 模式检索到。
         """
-        索引目录下的所有文档
-        Args:
-            dir_path: 文档目录路径
-        Returns:
-            索引结果信息
-        """
-        print(f"[RAGService] 开始索引目录: {dir_path}")
+        index = self._vector_store.get_index()
+        if index is None:
+            return
+        nodes: List[Any] = []
+        try:
+            nodes = self._vector_store.rebuild_bm25_nodes()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[RAGService] 重建 BM25 语料失败: %s", exc)
+        self._retriever = HybridRetriever(index, nodes=nodes, use_reranker=settings.ENABLE_RERANK)
 
-        # 1. 加载文档
-        documents = self._loader.load_directory(dir_path)
-        if not documents:
-            return {"success": False, "message": "没有找到可加载的文档"}
-
-        # 2. 分块
-        nodes = self._chunker.chunk_documents(documents)
-        self._all_nodes.extend(nodes)
-
-        # 3. 创建向量索引
-        self._vector_store.create_index(nodes)
-        
-        # 4. 重建混合检索器（包含BM25索引）
-        self._retriever = HybridRetriever(
-            self._vector_store.get_index(),
-            nodes=self._all_nodes,
-            use_reranker=True,
-        )
-
-        # 5. 记录到数据库
-        for file_path in Path(dir_path).iterdir():
-            if file_path.suffix.lower() in {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}:
-                doc_id = str(uuid.uuid4())
-                db_manager.add_document(
-                    doc_id=doc_id,
-                    filename=file_path.name,
-                    file_type=file_path.suffix[1:],
-                    file_size=file_path.stat().st_size,
-                )
-                db_manager.update_document_status(
-                    doc_id=doc_id,
-                    status="completed",
-                    chunk_count=len(nodes),
-                )
-
-        return {
-            "success": True,
-            "document_count": len(documents),
-            "chunk_count": len(nodes),
-            "message": f"成功索引 {len(documents)} 个文档，共 {len(nodes)} 个片段",
-        }
-
-    def index_single_file(self, file_path: str) -> dict:
-        """
-        索引单个文件
-        Args:
-            file_path: 文件路径
-        Returns:
-            索引结果
-        """
-        print(f"[RAGService] 开始索引文件: {file_path}")
-
+    # ============================================================
+    # 索引
+    # ============================================================
+    def _extract_text(self, file_path: str) -> str:
+        """把任意支持格式的文件提取为纯文本(交给 ingest 模块处理结构)。"""
         documents = self._loader.load_file(file_path)
-        nodes = self._chunker.chunk_documents(documents)
-        self._all_nodes.extend(nodes)
+        return "\n\n".join((doc.text or "") for doc in documents).strip()
 
-        # 追加到已有索引
-        self._vector_store.create_index(nodes)
-        
-        # 重建混合检索器
-        self._retriever = HybridRetriever(
-            self._vector_store.get_index(),
-            nodes=self._all_nodes,
-            use_reranker=True,
+    def index_file(
+        self,
+        file_path: str,
+        *,
+        original_filename: Optional[str] = None,
+        doc_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        doc_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """索引单个文件。
+
+        Returns:
+            {"success", "document_id", "chunk_count", "doc_type", "chunk_strategy",
+             "strategy_confidence", "structure_detected", "message"}
+        """
+        path = Path(file_path)
+        tenant_id = tenant_id or self.default_tenant_id
+        kb_id = kb_id or self.default_kb_id
+        original_filename = original_filename or path.name
+        content_hash = compute_content_hash(path)
+
+        # ---- 去重(F1.8): 同一知识库内内容相同就不再入库 ----
+        existing = db_manager.find_document_by_hash(tenant_id, kb_id, content_hash)
+        if existing:
+            logger.info("[RAGService] 内容重复, 跳过入库: %s", original_filename)
+            return {
+                "success": False,
+                "duplicate": True,
+                "document_id": existing.id,
+                "chunk_count": existing.chunk_count,
+                "message": f"该文档内容已存在（{existing.original_filename or existing.filename}），未重复入库",
+            }
+
+        text = self._extract_text(str(path))
+        if not text:
+            return {"success": False, "message": "文件内容为空或无法解析"}
+
+        document_id = str(uuid.uuid4())
+        meta: Dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "kb_id": kb_id,
+            "document_id": document_id,
+            "source_file": str(path),
+            "filename": original_filename,
+        }
+        meta.update(doc_meta or {})
+
+        result, type_source, route_detail = ingest_text(
+            text,
+            filename=original_filename,
+            user_hint=doc_type,
+            doc_meta=meta,
         )
 
-        doc_id = str(uuid.uuid4())
-        file = Path(file_path)
+        if not result.sections:
+            db_manager.add_document(
+                doc_id=document_id,
+                filename=path.name,
+                original_filename=original_filename,
+                file_type=path.suffix[1:].lower(),
+                file_size=path.stat().st_size,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                content_hash=content_hash,
+                doc_type=result.doc_type,
+                doc_type_source=type_source,
+                chunk_strategy=result.strategy,
+                strategy_confidence=result.confidence,
+                structure_detected=result.structure_detected,
+            )
+            db_manager.update_document_status(
+                document_id, status="failed", error_message="解析后没有任何可用片段"
+            )
+            return {"success": False, "document_id": document_id, "message": "解析后没有任何可用片段"}
+
+        nodes = build_text_nodes(result, doc_meta=meta)
+        self._vector_store.create_index(nodes)  # 追加写入
+        self._rebuild_retriever()
+
         db_manager.add_document(
-            doc_id=doc_id,
-            filename=file.name,
-            file_type=file.suffix[1:],
-            file_size=file.stat().st_size,
+            doc_id=document_id,
+            filename=path.name,
+            original_filename=original_filename,
+            file_type=path.suffix[1:].lower(),
+            file_size=path.stat().st_size,
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            content_hash=content_hash,
+            doc_type=result.doc_type,
+            doc_type_source=type_source,
+            chunk_strategy=result.strategy,
+            strategy_confidence=result.confidence,
+            structure_detected=result.structure_detected,
         )
         db_manager.update_document_status(
-            doc_id=doc_id,
-            status="completed",
-            chunk_count=len(nodes),
+            document_id, status="completed", chunk_count=len(nodes)
+        )
+
+        logger.info(
+            "[RAGService] 索引完成: %s -> %d 片段 | doc_type=%s strategy=%s confidence=%s source=%s",
+            original_filename,
+            len(nodes),
+            result.doc_type,
+            result.strategy,
+            result.confidence,
+            type_source,
         )
 
         return {
             "success": True,
-            "document_id": doc_id,
+            "document_id": document_id,
             "chunk_count": len(nodes),
-            "message": f"成功索引 {file.name}，共 {len(nodes)} 个片段",
+            "doc_type": result.doc_type,
+            "doc_type_source": type_source,
+            "chunk_strategy": result.strategy,
+            "strategy_confidence": result.confidence,
+            "structure_detected": result.structure_detected,
+            "route_detail": route_detail,
+            "degraded": result.is_degraded(),
+            "message": f"成功索引 {original_filename}，共 {len(nodes)} 个片段"
+            + ("（结构未识别，已降级处理）" if result.is_degraded() else ""),
         }
 
-    def retrieve(self, query: str, top_k: int = 5, similarity_threshold: float = 0.5):
-        """
-        传统检索模式（不使用工作流）
-        Args:
-            query: 查询文本
-            top_k: 返回片段数
-            similarity_threshold: 相似度阈值
-        Returns:
-            (检索结果节点列表, 上下文文本)
-        """
+    def index_directory(self, dir_path: str, **kwargs: Any) -> Dict[str, Any]:
+        """索引目录下的所有文档。每个文件独立统计, 不再共用总块数。"""
+        directory = Path(dir_path)
+        if not directory.is_dir():
+            return {"success": False, "message": f"目录不存在: {dir_path}"}
+
+        results: List[Dict[str, Any]] = []
+        for file_path in sorted(directory.iterdir()):
+            if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            try:
+                results.append(self.index_file(str(file_path), **kwargs))
+            except Exception as exc:  # noqa: BLE001 - 单个文件失败不应中断整批
+                logger.error("[RAGService] 索引失败 %s: %s", file_path.name, exc, exc_info=True)
+                results.append({"success": False, "message": f"{file_path.name}: {exc}"})
+
+        succeeded = [r for r in results if r.get("success")]
+        duplicates = [r for r in results if r.get("duplicate")]
+        return {
+            "success": bool(succeeded),
+            "document_count": len(succeeded),
+            "duplicate_count": len(duplicates),
+            "chunk_count": sum(int(r.get("chunk_count") or 0) for r in succeeded),
+            "documents": results,
+            "message": (
+                f"成功索引 {len(succeeded)} 个文档, "
+                f"共 {sum(int(r.get('chunk_count') or 0) for r in succeeded)} 个片段"
+                + (f", 跳过重复 {len(duplicates)} 个" if duplicates else "")
+            ),
+        }
+
+    # 兼容旧调用名
+    def index_single_file(self, file_path: str, original_filename: Optional[str] = None) -> Dict[str, Any]:
+        return self.index_file(file_path, original_filename=original_filename)
+
+    def index_documents(self, dir_path: str) -> Dict[str, Any]:
+        return self.index_directory(dir_path)
+
+    # ============================================================
+    # 删除(F1.9: 必须同时清理向量, 否则留下永远删不掉的孤儿向量)
+    # ============================================================
+    def delete_document(self, document_id: str) -> Dict[str, Any]:
+        removed_vectors = self._vector_store.delete_by_document(document_id)
+        db_manager.delete_document(document_id)
+        self._rebuild_retriever()
+        logger.info(
+            "[RAGService] 文档 %s 已删除, 清理向量 %d 条", document_id, removed_vectors
+        )
+        return {
+            "success": True,
+            "document_id": document_id,
+            "removed_vectors": removed_vectors,
+            "message": f"文档已删除，同时清理了 {removed_vectors} 条向量",
+        }
+
+    # ============================================================
+    # 检索
+    # ============================================================
+    def retrieve(
+        self, query: str, top_k: Optional[int] = None, similarity_threshold: Optional[float] = None
+    ) -> Tuple[List[Any], str]:
+        """传统检索(不走工作流)。"""
         if self._retriever is None:
             return [], ""
-
         nodes = self._retriever.retrieve(query, top_k, similarity_threshold)
-        context = self._retriever.get_context_text(nodes)
-        return nodes, context
+        return nodes, self._retriever.get_context_text(nodes)
 
     async def retrieve_with_workflow(
-        self, 
-        query: str, 
-        top_k: int = 5, 
-        similarity_threshold: float = 0.5
-    ) -> dict:
-        """
-        Agentic RAG 工作流模式
-        Args:
-            query: 查询文本
-            top_k: 返回片段数
-            similarity_threshold: 相似度阈值
-        Returns:
-            工作流执行结果
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Agentic RAG 工作流模式。
+
+        修复 T-03: 返回值里补上 reranked_docs。
+        原实现只返回 context/sources/workflow_steps/reflection_score,
+        而 chat_service 却在取 `rag_result.get("reranked_docs", [])` ——
+        取到的永远是空列表, 导致响应里的引用条数恒为 0。
         """
         if self._retriever is None:
             return {
                 "context": "",
                 "sources": [],
-                "workflow_steps": [],
+                "reranked_docs": [],
+                "workflow_steps": ["retriever_not_ready"],
                 "reflection_score": 0.0,
+                "refuse": True,
             }
 
-        # 获取工作流实例
-        workflow = get_rag_workflow(self._retriever)
+        initial_params = params_for_round(0)
+        if top_k is not None:
+            initial_params["top_k"] = top_k
+        if similarity_threshold is not None:
+            initial_params["threshold"] = similarity_threshold
 
-        # 初始化状态
         initial_state: RAGWorkflowState = {
             "query": query,
             "rewritten_query": "",
             "hyde_doc": "",
+            "sub_questions": [],
             "retrieved_docs": [],
             "reranked_docs": [],
             "context": "",
             "reflection_score": 0.0,
-            "answer": "",
+            "reflection_note": "",
             "sources": [],
             "retry_count": 0,
+            "retry_params": initial_params,
+            "refuse": False,
             "workflow_steps": [],
         }
 
-        # 执行工作流
-        result = await workflow.ainvoke(initial_state)
+        workflow = get_rag_workflow()
+        # retriever 按请求注入 —— 这是 T-07 的修复点, 不再有全局单例绑定旧索引
+        result = await workflow.ainvoke(
+            initial_state, config={"configurable": {"retriever": self._retriever}}
+        )
 
         return {
             "context": result.get("context", ""),
             "sources": result.get("sources", []),
+            "reranked_docs": result.get("reranked_docs", []),
             "workflow_steps": result.get("workflow_steps", []),
             "reflection_score": result.get("reflection_score", 0.0),
+            "reflection_note": result.get("reflection_note", ""),
+            "refuse": bool(result.get("refuse", False)),
+            "retry_count": result.get("retry_count", 0),
         }
 
-    def get_sources_info(self, nodes):
-        """获取来源信息"""
-        if self._retriever is None:
+    def get_sources_info(self, nodes: List[Any]) -> List[dict]:
+        if self._retriever is None or not nodes:
             return []
         return self._retriever.get_sources_info(nodes)
 

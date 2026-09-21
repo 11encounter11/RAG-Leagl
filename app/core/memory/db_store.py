@@ -45,16 +45,36 @@ class Message(Base):
 
 
 class Document(Base):
-    """知识库文档表"""
+    """知识库文档表。
+
+    P0 新增字段都是为了回应两个具体验收:
+      - 追溯   : original_filename / content_hash / doc_type / chunk_strategy 必须落库,
+                 否则"这条片段是怎么切出来的"无从审计;
+      - 多租户 : tenant_id / kb_id 从第一张表就带上, 避免 P2 改造时全库迁移。
+    """
     __tablename__ = "documents"
 
     id = Column(String(64), primary_key=True, comment="文档ID")
     filename = Column(String(255), nullable=False, comment="文件名")
+    original_filename = Column(String(255), nullable=True, comment="上传时的原始文件名")
     file_type = Column(String(20), nullable=False, comment="文件类型")
     file_size = Column(Integer, default=0, comment="文件大小")
     chunk_count = Column(Integer, default=0, comment="分块数")
     status = Column(String(20), default="pending", comment="状态")
     error_message = Column(Text, nullable=True, comment="错误信息")
+
+    # ===== 多租户 =====
+    tenant_id = Column(String(64), default="platform", nullable=False, index=True, comment="租户ID")
+    kb_id = Column(String(64), default="public", nullable=False, index=True, comment="知识库ID")
+
+    # ===== 解析与切分留痕 =====
+    content_hash = Column(String(64), nullable=True, index=True, comment="文件内容SHA256(去重用)")
+    doc_type = Column(String(32), nullable=True, comment="文档类型")
+    doc_type_source = Column(String(32), nullable=True, comment="类型判定来源")
+    chunk_strategy = Column(String(64), nullable=True, comment="实际使用的切分策略")
+    strategy_confidence = Column(String(16), nullable=True, comment="策略置信度")
+    structure_detected = Column(String(128), nullable=True, comment="探测到的结构")
+
     created_at = Column(DateTime, default=func.now(), comment="上传时间")
     processed_at = Column(DateTime, nullable=True, comment="处理完成时间")
 
@@ -197,19 +217,82 @@ class DatabaseManager:
             session.close()
 
     # ===== 文档操作 =====
-    def add_document(self, doc_id: str, filename: str, file_type: str, file_size: int) -> Document:
-        """添加文档记录"""
+    def add_document(
+        self,
+        doc_id: str,
+        filename: str,
+        file_type: str,
+        file_size: int,
+        *,
+        original_filename: str = None,
+        tenant_id: str = "platform",
+        kb_id: str = "public",
+        content_hash: str = None,
+        doc_type: str = None,
+        doc_type_source: str = None,
+        chunk_strategy: str = None,
+        strategy_confidence: str = None,
+        structure_detected: str = None,
+    ) -> Document:
+        """添加文档记录。"""
         session = self.get_session()
         try:
             doc = Document(
                 id=doc_id,
                 filename=filename,
+                original_filename=original_filename or filename,
                 file_type=file_type,
                 file_size=file_size,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                content_hash=content_hash,
+                doc_type=doc_type,
+                doc_type_source=doc_type_source,
+                chunk_strategy=chunk_strategy,
+                strategy_confidence=strategy_confidence,
+                structure_detected=structure_detected,
             )
             session.add(doc)
             session.commit()
             return doc
+        finally:
+            session.close()
+
+    def get_document(self, doc_id: str) -> Optional[Document]:
+        """按 ID 取文档。"""
+        session = self.get_session()
+        try:
+            return session.query(Document).filter_by(id=doc_id).first()
+        finally:
+            session.close()
+
+    def find_document_by_hash(
+        self, tenant_id: str, kb_id: str, content_hash: str
+    ) -> Optional[Document]:
+        """按内容哈希在同一知识库内查重(F1.8)。"""
+        if not content_hash:
+            return None
+        session = self.get_session()
+        try:
+            return (
+                session.query(Document)
+                .filter_by(tenant_id=tenant_id, kb_id=kb_id, content_hash=content_hash)
+                .filter(Document.status == "completed")
+                .first()
+            )
+        finally:
+            session.close()
+
+    def delete_document(self, doc_id: str) -> bool:
+        """删除文档记录。"""
+        session = self.get_session()
+        try:
+            doc = session.query(Document).filter_by(id=doc_id).first()
+            if not doc:
+                return False
+            session.delete(doc)
+            session.commit()
+            return True
         finally:
             session.close()
 
@@ -228,17 +311,37 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def list_documents(self, limit: int = 20, offset: int = 0) -> List[Document]:
-        """获取文档列表"""
+    def list_documents(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        tenant_id: str = None,
+        kb_id: str = None,
+    ) -> List[Document]:
+        """获取文档列表(可按租户/知识库过滤)。"""
         session = self.get_session()
         try:
+            query = session.query(Document)
+            if tenant_id:
+                query = query.filter(Document.tenant_id == tenant_id)
+            if kb_id:
+                query = query.filter(Document.kb_id == kb_id)
             return (
-                session.query(Document)
-                .order_by(Document.created_at.desc())
-                .limit(limit)
-                .offset(offset)
-                .all()
+                query.order_by(Document.created_at.desc()).limit(limit).offset(offset).all()
             )
+        finally:
+            session.close()
+
+    def count_documents(self, tenant_id: str = None, kb_id: str = None) -> int:
+        """统计文档数。"""
+        session = self.get_session()
+        try:
+            query = session.query(Document)
+            if tenant_id:
+                query = query.filter(Document.tenant_id == tenant_id)
+            if kb_id:
+                query = query.filter(Document.kb_id == kb_id)
+            return query.count()
         finally:
             session.close()
 
