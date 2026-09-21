@@ -24,6 +24,7 @@ async def chat(request: ChatRequest):
             conversation_id=request.conversation_id,
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold,
+            use_agentic_rag=request.use_agentic_rag,
         )
         return ChatResponse(**result)
     except ValueError as e:
@@ -47,6 +48,7 @@ async def chat_stream(request: ChatRequest):
                 conversation_id=request.conversation_id,
                 top_k=request.top_k,
                 similarity_threshold=request.similarity_threshold,
+                use_agentic_rag=request.use_agentic_rag,
             ),
             media_type="text/event-stream",
             headers={

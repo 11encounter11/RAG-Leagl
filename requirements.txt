@@ -3,12 +3,20 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 
-# LLM & RAG
+# LLM & RAG - LlamaIndex
 llama-index-core>=0.11.0
 llama-index-llms-openai-like>=0.2.0
-llama-index-embeddings-huggingface>=0.3.0
+llama-index-embeddings-zhipuai>=0.1.0
 llama-index-vector-stores-milvus>=0.2.0
 llama-index-readers-file>=0.2.0
+
+# Agent Workflow - LangGraph
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# Retrieval Enhancement
+rank-bm25>=0.2.2
+sentence-transformers>=2.7.0
 
 # LLM API Clients
 openai>=1.40.0
@@ -22,10 +30,13 @@ alembic>=1.13.0
 # Cache
 redis>=5.0.0
 
-# Data Processing
+# Vector DB
 pymilvus>=2.4.0
+
+# Data Processing
 pypdf>=4.0.0
 python-docx>=1.1.0
+openpyxl>=3.1.0
 
 # Utilities
 pydantic>=2.8.0

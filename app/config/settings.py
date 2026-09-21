@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     MYSQL_PORT: int = 3307
     MYSQL_USER: str = "rag_user"
     MYSQL_PASSWORD: str = "rag_password"
-    MYSQL_DATABASE: str = "legal_rag"
+    MYSQL_DATABASE: str = "rag_system"
 
     # ===== Redis =====
     REDIS_HOST: str = "localhost"
@@ -35,9 +35,18 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.5
+    BM25_TOP_K: int = 10
+    RERANK_TOP_N: int = 5
+    RERANK_MODEL: str = "BAAI/bge-reranker-base"
+
+    # ===== Agentic RAG Settings =====
+    REFLECTION_THRESHOLD: float = 0.6
+    MAX_RETRIES: int = 2
+    QUERY_REWRITE_MODEL: str = "glm-5.3-flash"
+    HYDE_MODEL: str = "glm-5.3-flash"
 
     # ===== Embedding Model =====
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-large-zh-v1.5"
+    EMBEDDING_MODEL_NAME: str = "embedding-3"
 
     # ===== Server =====
     HOST: str = "0.0.0.0"
@@ -45,7 +54,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # ===== Milvus Collection =====
-    MILVUS_COLLECTION_NAME: str = "legal_documents"
+    MILVUS_COLLECTION_NAME: str = "knowledge_base"
 
     @property
     def mysql_url(self) -> str:

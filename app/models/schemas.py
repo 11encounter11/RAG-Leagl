@@ -22,6 +22,17 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(None, description="会话ID，不传则创建新会话")
     top_k: Optional[int] = Field(5, description="检索返回的文档片段数")
     similarity_threshold: Optional[float] = Field(0.5, description="相似度阈值")
+    use_agentic_rag: Optional[bool] = Field(True, description="是否启用 Agentic RAG 工作流")
+
+
+class SourceInfo(BaseModel):
+    """来源引用信息"""
+    index: int
+    filename: str
+    sheet: Optional[str] = ""
+    row: Optional[str] = ""
+    score: float = 0.0
+    text_preview: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -33,15 +44,19 @@ class ChatResponse(BaseModel):
     retrieval_count: int = 0
     tokens_used: int = 0
     response_time: float = 0.0
+    sources: List[SourceInfo] = []
+    workflow_steps: List[str] = []
+    reflection_score: Optional[float] = None
 
 
 class SSEChatResponse(BaseModel):
     """SSE 流式响应的单个 token 片段"""
-    type: str = "token"  # token / done / error
+    type: str = "token"  # token / done / error / sources
     content: str = ""
     conversation_id: str = ""
     model_name: str = ""
     retrieval_count: int = 0
+    sources: Optional[List[SourceInfo]] = None
 
 
 # ===== 会话相关 =====

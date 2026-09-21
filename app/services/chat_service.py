@@ -1,5 +1,5 @@
 """
-聊天服务 - 核心聊天逻辑，整合 RAG 检索 + LLM 生成
+聊天服务 - 核心聊天逻辑，整合 Agentic RAG 工作流 + LLM 生成
 """
 import time
 import uuid
@@ -13,7 +13,7 @@ from app.utils.sse import sse_format, sse_done, sse_error
 
 
 class ChatService:
-    """聊天服务 - 整合 RAG + LLM 的完整聊天流程"""
+    """聊天服务 - 整合 Agentic RAG + LLM 的完整聊天流程"""
 
     async def chat(
         self,
@@ -22,6 +22,7 @@ class ChatService:
         conversation_id: str = None,
         top_k: int = 5,
         similarity_threshold: float = 0.5,
+        use_agentic_rag: bool = True,
     ) -> dict:
         """
         非流式聊天
@@ -39,8 +40,24 @@ class ChatService:
             if not conv:
                 raise ValueError(f"会话不存在: {conversation_id}")
 
-        # 2. RAG 检索
-        nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
+        # 2. RAG 检索（根据模式选择）
+        workflow_steps = []
+        reflection_score = None
+        
+        if use_agentic_rag:
+            # Agentic RAG 工作流模式
+            rag_result = await rag_service.retrieve_with_workflow(
+                message, top_k, similarity_threshold
+            )
+            nodes = rag_result.get("reranked_docs", [])
+            context = rag_result.get("context", "")
+            sources = rag_result.get("sources", [])
+            workflow_steps = rag_result.get("workflow_steps", [])
+            reflection_score = rag_result.get("reflection_score")
+        else:
+            # 传统检索模式
+            nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
+            sources = rag_service.get_sources_info(nodes)
 
         # 3. 构建消息列表
         llm = llm_router.get(model_name)
@@ -75,6 +92,9 @@ class ChatService:
             "model_name": model_name,
             "retrieval_count": len(nodes),
             "response_time": round(response_time, 2),
+            "sources": sources,
+            "workflow_steps": workflow_steps,
+            "reflection_score": reflection_score,
         }
 
     async def chat_stream(
@@ -84,6 +104,7 @@ class ChatService:
         conversation_id: str = None,
         top_k: int = 5,
         similarity_threshold: float = 0.5,
+        use_agentic_rag: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
         流式聊天（SSE）
@@ -100,8 +121,24 @@ class ChatService:
                 yield await sse_error(f"会话不存在: {conversation_id}")
                 return
 
-        # 2. RAG 检索
-        nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
+        # 2. RAG 检索（根据模式选择）
+        workflow_steps = []
+        reflection_score = None
+        
+        if use_agentic_rag:
+            # Agentic RAG 工作流模式
+            rag_result = await rag_service.retrieve_with_workflow(
+                message, top_k, similarity_threshold
+            )
+            nodes = rag_result.get("reranked_docs", [])
+            context = rag_result.get("context", "")
+            sources = rag_result.get("sources", [])
+            workflow_steps = rag_result.get("workflow_steps", [])
+            reflection_score = rag_result.get("reflection_score")
+        else:
+            # 传统检索模式
+            nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
+            sources = rag_service.get_sources_info(nodes)
 
         # 3. 构建消息列表
         llm = llm_router.get(model_name)
@@ -123,7 +160,17 @@ class ChatService:
             yield await sse_error(str(e))
             return
 
-        # 5. 保存消息
+        # 5. 发送来源信息
+        if sources:
+            yield await sse_format({
+                "type": "sources",
+                "sources": sources,
+                "conversation_id": conversation_id,
+                "workflow_steps": workflow_steps,
+                "reflection_score": reflection_score,
+            })
+
+        # 6. 保存消息
         db_manager.add_message(
             conversation_id=conversation_id,
             role="user",
@@ -136,11 +183,11 @@ class ChatService:
             model_name=model_name,
         )
 
-        # 6. 更新 Redis 缓存
+        # 7. 更新 Redis 缓存
         await redis_store.append_message(conversation_id, {"role": "user", "content": message})
         await redis_store.append_message(conversation_id, {"role": "assistant", "content": full_response})
 
-        # 7. 发送结束信号
+        # 8. 发送结束信号
         yield await sse_done(conversation_id, model_name)
 
     def _build_messages(

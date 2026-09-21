@@ -19,7 +19,7 @@ API_BASE = "http://localhost:8000"
 
 # ===== 侧边栏 =====
 with st.sidebar:
-    st.title("⚖️ 法律智能问答")
+    st.title("法律智能问答")
 
     st.markdown("---")
 

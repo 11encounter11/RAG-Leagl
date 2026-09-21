@@ -1,5 +1,6 @@
 """
 RAG 服务 - 文档索引和检索的核心逻辑
+整合混合检索器和 LangGraph Agentic RAG 工作流
 """
 import uuid
 from pathlib import Path
@@ -8,7 +9,8 @@ from typing import List, Optional
 from app.core.rag.loader import DocumentLoader, DocumentChunker
 from app.core.rag.embedder import Embedder
 from app.core.rag.vector_store import VectorStoreManager
-from app.core.rag.retriever import Retriever
+from app.core.rag.retriever import HybridRetriever
+from app.core.workflow.rag_workflow import get_rag_workflow, RAGWorkflowState
 from app.core.memory.db_store import db_manager
 
 
@@ -20,13 +22,19 @@ class RAGService:
         self._chunker = DocumentChunker()
         self._embedder = Embedder()
         self._vector_store = VectorStoreManager(embed_model=self._embedder.embed_model)
-        self._retriever: Optional[Retriever] = None
+        self._retriever: Optional[HybridRetriever] = None
+        self._all_nodes = []  # 存储所有文档节点（用于BM25索引）
 
     def init_index(self):
         """初始化索引（服务启动时调用）"""
         try:
             self._vector_store.load_index()
-            self._retriever = Retriever(self._vector_store.get_index())
+            # 注意：这里暂时不传递 nodes，BM25 索引会在索引文档时构建
+            self._retriever = HybridRetriever(
+                self._vector_store.get_index(),
+                nodes=self._all_nodes,
+                use_reranker=True,
+            )
             print("[RAGService] 索引初始化完成")
         except Exception as e:
             print(f"[RAGService] 索引加载失败（可能还没有数据）: {e}")
@@ -48,14 +56,21 @@ class RAGService:
 
         # 2. 分块
         nodes = self._chunker.chunk_documents(documents)
+        self._all_nodes.extend(nodes)
 
         # 3. 创建向量索引
         self._vector_store.create_index(nodes)
-        self._retriever = Retriever(self._vector_store.get_index())
+        
+        # 4. 重建混合检索器（包含BM25索引）
+        self._retriever = HybridRetriever(
+            self._vector_store.get_index(),
+            nodes=self._all_nodes,
+            use_reranker=True,
+        )
 
-        # 4. 记录到数据库
+        # 5. 记录到数据库
         for file_path in Path(dir_path).iterdir():
-            if file_path.suffix.lower() in {".pdf", ".docx", ".md", ".txt"}:
+            if file_path.suffix.lower() in {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}:
                 doc_id = str(uuid.uuid4())
                 db_manager.add_document(
                     doc_id=doc_id,
@@ -88,10 +103,17 @@ class RAGService:
 
         documents = self._loader.load_file(file_path)
         nodes = self._chunker.chunk_documents(documents)
+        self._all_nodes.extend(nodes)
 
         # 追加到已有索引
         self._vector_store.create_index(nodes)
-        self._retriever = Retriever(self._vector_store.get_index())
+        
+        # 重建混合检索器
+        self._retriever = HybridRetriever(
+            self._vector_store.get_index(),
+            nodes=self._all_nodes,
+            use_reranker=True,
+        )
 
         doc_id = str(uuid.uuid4())
         file = Path(file_path)
@@ -116,7 +138,7 @@ class RAGService:
 
     def retrieve(self, query: str, top_k: int = 5, similarity_threshold: float = 0.5):
         """
-        检索相关文档
+        传统检索模式（不使用工作流）
         Args:
             query: 查询文本
             top_k: 返回片段数
@@ -130,6 +152,63 @@ class RAGService:
         nodes = self._retriever.retrieve(query, top_k, similarity_threshold)
         context = self._retriever.get_context_text(nodes)
         return nodes, context
+
+    async def retrieve_with_workflow(
+        self, 
+        query: str, 
+        top_k: int = 5, 
+        similarity_threshold: float = 0.5
+    ) -> dict:
+        """
+        Agentic RAG 工作流模式
+        Args:
+            query: 查询文本
+            top_k: 返回片段数
+            similarity_threshold: 相似度阈值
+        Returns:
+            工作流执行结果
+        """
+        if self._retriever is None:
+            return {
+                "context": "",
+                "sources": [],
+                "workflow_steps": [],
+                "reflection_score": 0.0,
+            }
+
+        # 获取工作流实例
+        workflow = get_rag_workflow(self._retriever)
+
+        # 初始化状态
+        initial_state: RAGWorkflowState = {
+            "query": query,
+            "rewritten_query": "",
+            "hyde_doc": "",
+            "retrieved_docs": [],
+            "reranked_docs": [],
+            "context": "",
+            "reflection_score": 0.0,
+            "answer": "",
+            "sources": [],
+            "retry_count": 0,
+            "workflow_steps": [],
+        }
+
+        # 执行工作流
+        result = await workflow.ainvoke(initial_state)
+
+        return {
+            "context": result.get("context", ""),
+            "sources": result.get("sources", []),
+            "workflow_steps": result.get("workflow_steps", []),
+            "reflection_score": result.get("reflection_score", 0.0),
+        }
+
+    def get_sources_info(self, nodes):
+        """获取来源信息"""
+        if self._retriever is None:
+            return []
+        return self._retriever.get_sources_info(nodes)
 
 
 # 全局实例

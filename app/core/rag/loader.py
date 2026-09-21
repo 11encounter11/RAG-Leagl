@@ -11,9 +11,19 @@ from llama_index.readers.file import PyMuPDFReader, DocxReader
 
 from app.config.settings import settings
 
-
+"""
+原始文件（如劳动法.pdf）
+    ↓  Loader 加载
+整篇纯文本（一个 Document 对象）
+    ↓  Chunker 分块
+多个小片段（多个 Node 对象）
+    ↓  Embedder 向量化
+多个向量
+    ↓  存入 Milvus
+向量数据库
+"""
 class DocumentLoader:
-    """文档加载器 - 支持 PDF、DOCX、Markdown、TXT"""
+    """文档加载器 - 支持 PDF、DOCX、Excel、CSV、Markdown、TXT"""
 
     def __init__(self):
         self._readers = {
@@ -33,6 +43,10 @@ class DocumentLoader:
 
         if ext in self._readers:
             documents = self._readers[ext].load_data(file=Path(file_path))
+        elif ext == ".xlsx":
+            documents = self._load_excel(file_path)
+        elif ext == ".csv":
+            documents = self._load_csv(file_path)
         elif ext in (".md", ".txt"):
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -47,6 +61,72 @@ class DocumentLoader:
 
         return documents
 
+    def _load_excel(self, file_path: str) -> List[Document]:
+        """加载 Excel 文件，将每行转换为结构化文本"""
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, read_only=True)
+            documents = []
+            
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = list(ws.iter_rows(values_only=True))
+                if not rows:
+                    continue
+                
+                # 第一行作为表头
+                headers = [str(cell) if cell else "" for cell in rows[0]]
+                
+                # 将每行数据转换为文本
+                for row_idx, row in enumerate(rows[1:], start=2):
+                    if not any(row):  # 跳过空行
+                        continue
+                    row_text = " | ".join(
+                        f"{header}: {cell}" 
+                        for header, cell in zip(headers, row) 
+                        if cell is not None
+                    )
+                    if row_text.strip():
+                        documents.append(Document(
+                            text=row_text,
+                            metadata={
+                                "sheet": sheet_name,
+                                "row": row_idx,
+                                "source": file_path,
+                            }
+                        ))
+            
+            wb.close()
+            return documents
+        except Exception as e:
+            raise ValueError(f"Excel 文件加载失败: {e}")
+
+    def _load_csv(self, file_path: str) -> List[Document]:
+        """加载 CSV 文件，将每行转换为结构化文本"""
+        import csv
+        documents = []
+        
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row_idx, row in enumerate(reader, start=2):
+                    row_text = " | ".join(
+                        f"{key}: {value}" 
+                        for key, value in row.items() 
+                        if value
+                    )
+                    if row_text.strip():
+                        documents.append(Document(
+                            text=row_text,
+                            metadata={
+                                "row": row_idx,
+                                "source": file_path,
+                            }
+                        ))
+            return documents
+        except Exception as e:
+            raise ValueError(f"CSV 文件加载失败: {e}")
+
     def load_directory(self, dir_path: str) -> List[Document]:
         """
         加载目录下所有支持的文档
@@ -56,7 +136,7 @@ class DocumentLoader:
             Document 列表
         """
         all_documents = []
-        supported_ext = {".pdf", ".docx", ".md", ".txt"}
+        supported_ext = {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}
 
         for file_name in os.listdir(dir_path):
             file_path = os.path.join(dir_path, file_name)
