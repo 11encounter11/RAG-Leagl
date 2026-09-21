@@ -351,6 +351,9 @@ class RAGService:
             "retry_count": 0,
             "retry_params": initial_params,
             "refuse": False,
+            "domain_score": 1.0,
+            "confidence_level": "high",
+            "refuse_reason": "",
             "workflow_steps": [],
         }
 
@@ -368,6 +371,9 @@ class RAGService:
             "reflection_score": result.get("reflection_score", 0.0),
             "reflection_note": result.get("reflection_note", ""),
             "refuse": bool(result.get("refuse", False)),
+            "refuse_reason": result.get("refuse_reason", ""),
+            "domain_score": result.get("domain_score", 0.0),
+            "confidence_level": result.get("confidence_level", "high"),
             "retry_count": result.get("retry_count", 0),
         }
 

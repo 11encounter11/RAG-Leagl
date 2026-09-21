@@ -66,6 +66,9 @@ class ChatService:
                 "reflection_score": result.get("reflection_score"),
                 "reflection_note": result.get("reflection_note", ""),
                 "refused": bool(result.get("refuse", False)),
+                "refuse_reason": result.get("refuse_reason", ""),
+                "domain_score": result.get("domain_score"),
+                "confidence_level": result.get("confidence_level", "high"),
             }
 
         nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
@@ -77,7 +80,29 @@ class ChatService:
             "reflection_score": None,
             "reflection_note": "",
             "refused": not nodes,
+            "refuse_reason": "" if nodes else "直接检索模式未召回任何片段",
+            "domain_score": None,
+            "confidence_level": "high" if nodes else "out_of_domain",
         }
+
+    @staticmethod
+    def _with_caution(answer: str, retrieval: Dict) -> str:
+        """低置信时在回答末尾追加提示。
+
+        刻意写成"追加"而不是"拦截": 匹配度偏低不等于没有依据, 直接拒答会让
+        正常问题也得不到帮助。但用户必须知道这条依据的可信度不高 ——
+        把不确定性藏起来, 才是法律场景里最危险的做法。
+        """
+        if retrieval.get("confidence_level") != "low":
+            return answer
+        score = retrieval.get("domain_score")
+        shown = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
+        note = (
+            f"⚠️ 提示：本次检索与知识库的匹配度偏低（领域判据 {shown}），"
+            f"以上依据可能不完全适用于你描述的场景，请务必点开原文核对。"
+        )
+        # 流式场景会以空 answer 调用本方法(只取提示文案), 此时不要多出空行
+        return f"{answer}\n\n---\n{note}" if answer else f"\n\n---\n{note}"
 
     def _build_messages(
         self,
@@ -142,11 +167,14 @@ class ChatService:
         # 依据不足 -> 确定性拒答, 不调用 LLM(见 REFUSAL_MESSAGE 的注释)
         if retrieval["refused"]:
             response_text = REFUSAL_MESSAGE
-            logger.info("[ChatService] 依据不足, 返回拒答文案(未调用 LLM)")
+            logger.info(
+                "[ChatService] 依据不足, 返回拒答文案(未调用 LLM): %s",
+                retrieval.get("refuse_reason", ""),
+            )
         else:
             llm = llm_router.get(model_name)
             messages = self._build_messages(message, retrieval["context"], conversation_id)
-            response_text = await llm.chat(messages)
+            response_text = self._with_caution(await llm.chat(messages), retrieval)
 
         message_id = self._persist(conversation_id, message, response_text, model_name)
 
@@ -167,6 +195,9 @@ class ChatService:
             "reflection_score": retrieval["reflection_score"],
             "reflection_note": retrieval["reflection_note"],
             "refused": retrieval["refused"],
+            "refuse_reason": retrieval.get("refuse_reason", ""),
+            "domain_score": retrieval.get("domain_score"),
+            "confidence_level": retrieval.get("confidence_level", "high"),
         }
 
     # ============================================================
@@ -226,6 +257,20 @@ class ChatService:
                 yield await sse_error(str(exc))
                 return
 
+            # 低置信提示在流结束后追加(见 _with_caution 的说明)
+            caution = self._with_caution("", retrieval)
+            if caution:
+                full_response += caution
+                yield await sse_format(
+                    {
+                        "type": "token",
+                        "content": caution,
+                        "conversation_id": conversation_id,
+                        "model_name": model_name,
+                        "retrieval_count": len(nodes),
+                    }
+                )
+
         # 来源信息总是发一次, 前端不必区分"没有来源"和"字段没来"
         yield await sse_format(
             {
@@ -236,6 +281,9 @@ class ChatService:
                 "reflection_score": retrieval["reflection_score"],
                 "reflection_note": retrieval["reflection_note"],
                 "refused": retrieval["refused"],
+                "refuse_reason": retrieval.get("refuse_reason", ""),
+                "domain_score": retrieval.get("domain_score"),
+                "confidence_level": retrieval.get("confidence_level", "high"),
             }
         )
 

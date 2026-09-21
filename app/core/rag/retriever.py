@@ -166,6 +166,24 @@ class HybridRetriever:
     # ------------------------------------------------------------
     # 召回
     # ------------------------------------------------------------
+    def vector_top_score(self, query: str) -> float:
+        """只看向量那一路的最高原始相似度, 用作"是否属于本知识库领域"的判据。
+
+        刻意不经过 RRF 融合、不经过重排器:
+          - RRF 分数是排名倒数之和(量级 0.01), 与"像不像本领域"无关;
+          - 重排器是可选组件, 而拒答是安全底线, 不能依赖它。
+        代价是每次多一次嵌入调用(约几十毫秒), 相比 LLM 调用可以忽略;
+        换来的是拒答闸门在重排器不可用时依然有效。
+        """
+        try:
+            nodes = self._vector_retriever.retrieve(query)
+        except Exception as exc:  # noqa: BLE001 - 判据失效不应该让整个请求失败
+            logger.warning("[HybridRetriever] 领域判据获取失败, 跳过拒答闸门: %s", exc)
+            return 1.0  # 拿不到信号就放行, 避免误杀正常问题
+        if not nodes:
+            return 0.0
+        return float(nodes[0].score or 0.0)
+
     def retrieve_raw(self, query: str) -> List[NodeWithScore]:
         """只做多路召回 + RRF 融合, **不做重排**。
 

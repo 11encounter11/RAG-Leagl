@@ -53,7 +53,33 @@ class RAGWorkflowState(TypedDict, total=False):
     retry_count: int
     retry_params: Dict[str, Any]
     refuse: bool
+    # 拒答闸门的独立判据(不依赖重排器)
+    domain_score: float
+    confidence_level: str
+    refuse_reason: str
     workflow_steps: List[str]
+
+
+# 置信档位
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_LOW = "low"
+CONFIDENCE_OUT_OF_DOMAIN = "out_of_domain"
+
+
+def classify_domain(score: float) -> str:
+    """把领域判据分数映射成置信档位。
+
+    两档而不是单阈值: 实测下"库内问题"和"超纲问题"的分数**区间重叠**,
+    任何单阈值都必然误判一边。与其假装能一刀切, 不如把不确定显式表达出来 ——
+    低置信是提示用户核对, 硬拒答才是拒绝服务。
+    """
+    if not settings.ENABLE_DOMAIN_GATE:
+        return CONFIDENCE_HIGH
+    if score < settings.DOMAIN_SCORE_REJECT:
+        return CONFIDENCE_OUT_OF_DOMAIN
+    if score < settings.DOMAIN_SCORE_CAUTION:
+        return CONFIDENCE_LOW
+    return CONFIDENCE_HIGH
 
 
 # ============================================================
@@ -188,6 +214,39 @@ def create_rag_workflow():
             "workflow_steps": list(state.get("workflow_steps", [])) + steps,
         }
 
+    async def assess_domain(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+        """拒答闸门: 用向量原始相似度判断问题是否属于本知识库领域。
+
+        独立于重排器 —— 这是本次测试暴露的核心设计缺陷的修正:
+        原实现把"要不要拒答"完全交给重排分数阈值, 而重排器是可选组件。
+        实测中重排器因内存无法加载, 结果 4 条超纲题(商标/离婚/租赁/出资)
+        全部返回了劳动法条文 —— 拒答准确率 0%, 而系统没有任何异常表现。
+
+        放在召回之后、重排之前: 这一步不需要重排结果, 也不该被重排影响。
+        """
+        if not settings.ENABLE_DOMAIN_GATE:
+            return {
+                "domain_score": 1.0,
+                "confidence_level": CONFIDENCE_HIGH,
+                "workflow_steps": _step(state, "domain_gate:disabled"),
+            }
+
+        retriever = _get_retriever(config)
+        score = retriever.vector_top_score(state["query"])
+        level = classify_domain(score)
+        logger.info(
+            "[RAGWorkflow] 领域判据: score=%.4f -> %s (拒答线 %.2f / 低置信线 %.2f)",
+            score,
+            level,
+            settings.DOMAIN_SCORE_REJECT,
+            settings.DOMAIN_SCORE_CAUTION,
+        )
+        return {
+            "domain_score": score,
+            "confidence_level": level,
+            "workflow_steps": _step(state, f"domain_gate({score:.4f}->{level})"),
+        }
+
     async def rerank(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
         """统一精排 —— **整个流程里只在这里重排一次**。"""
         retriever = _get_retriever(config)
@@ -255,6 +314,12 @@ def create_rag_workflow():
 
     def decide(state: RAGWorkflowState) -> str:
         """条件边: 够好就生成, 不够好且还有额度就重试, 用完了就拒答。"""
+        # 领域判决优先于一切:
+        # 问题不在本知识库范围内时, 重试再多次也召不回"不存在的依据",
+        # 只会白烧 LLM 调用。所以先拒答, 不进入重试循环。
+        if state.get("confidence_level") == CONFIDENCE_OUT_OF_DOMAIN:
+            return "refuse"
+
         score = state.get("reflection_score", 0.0)
         retry_count = state.get("retry_count", 0)
         if score >= settings.REFLECTION_THRESHOLD:
@@ -279,18 +344,23 @@ def create_rag_workflow():
         }
 
     async def refuse(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
-        """拒答: 依据始终不足时明确告知, 而不是编造。"""
-        logger.info(
-            "[RAGWorkflow] 重试 %d 次后仍不达标(最后得分 %.2f), 判定为拒答",
-            state.get("retry_count", 0),
-            state.get("reflection_score", 0.0),
+        """拒答: 依据不足或问题超出知识库范围时明确告知, 而不是编造。"""
+        out_of_domain = state.get("confidence_level") == CONFIDENCE_OUT_OF_DOMAIN
+        reason = (
+            f"问题超出知识库范围(领域判据 {state.get('domain_score', 0.0):.4f} "
+            f"< 拒答线 {settings.DOMAIN_SCORE_REJECT})"
+            if out_of_domain
+            else f"检索依据不足(重试 {state.get('retry_count', 0)} 次, "
+            f"反思得分 {state.get('reflection_score', 0.0):.2f})"
         )
+        logger.info("[RAGWorkflow] 判定拒答: %s", reason)
         return {
             "refuse": True,
+            "refuse_reason": reason,
             "sources": [],
             "context": "",
             "reranked_docs": [],
-            "workflow_steps": _step(state, "refuse(依据不足)"),
+            "workflow_steps": _step(state, f"refuse({reason})"),
         }
 
     async def generate(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
@@ -303,6 +373,7 @@ def create_rag_workflow():
         sources = retriever.get_sources_info(reranked_docs) if reranked_docs else []
         return {
             "refuse": False,
+            "refuse_reason": "",
             "sources": sources,
             "context": state.get("context")
             or (retriever.get_context_text(reranked_docs) if reranked_docs else ""),
@@ -317,6 +388,7 @@ def create_rag_workflow():
     workflow.add_node("analyze_query", analyze_query)
     workflow.add_node("generate_hyde", generate_hyde)
     workflow.add_node("hybrid_retrieve", hybrid_retrieve)
+    workflow.add_node("assess_domain", assess_domain)
     workflow.add_node("rerank", rerank)
     workflow.add_node("reflect", reflect)
     workflow.add_node("retry", retry_handler)
@@ -326,7 +398,11 @@ def create_rag_workflow():
     workflow.add_edge(START, "analyze_query")
     workflow.add_edge("analyze_query", "generate_hyde")
     workflow.add_edge("generate_hyde", "hybrid_retrieve")
-    workflow.add_edge("hybrid_retrieve", "rerank")
+    # 召回后先过独立拒答闸门, 再重排。
+    # 顺序上刻意如此: 闸门只看向量原始相似度, 不需要也不应该等重排结果 ——
+    # 否则重排器一挂, 闸门就跟着失效。
+    workflow.add_edge("hybrid_retrieve", "assess_domain")
+    workflow.add_edge("assess_domain", "rerank")
     workflow.add_edge("rerank", "reflect")
     workflow.add_conditional_edges(
         "reflect",
@@ -401,6 +477,9 @@ def _flag_signature() -> tuple:
         settings.ENABLE_RERANK,
         settings.MAX_RETRIES,
         settings.REFLECTION_THRESHOLD,
+        settings.ENABLE_DOMAIN_GATE,
+        settings.DOMAIN_SCORE_REJECT,
+        settings.DOMAIN_SCORE_CAUTION,
     )
 
 

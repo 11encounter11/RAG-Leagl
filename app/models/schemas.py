@@ -72,6 +72,11 @@ class ChatResponse(BaseModel):
     reflection_note: Optional[str] = None
     # 依据不足时的明确拒答标记(F2.8)
     refused: bool = False
+    refuse_reason: Optional[str] = None
+    # 拒答闸门的独立判据: 向量原始相似度(不依赖重排器)
+    domain_score: Optional[float] = None
+    # high / low / out_of_domain
+    confidence_level: str = "high"
 
 
 class SSEChatResponse(BaseModel):

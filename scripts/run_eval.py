@@ -209,11 +209,109 @@ async def run_eval(top_k: int, mode: str) -> int:
     return 0
 
 
+async def run_gate_eval() -> int:
+    """只评测拒答闸门 —— 不重排、不调 LLM, 因此便宜且可反复跑。
+
+    与 direct/agentic 模式分开统计的理由:
+      "该不该拒答"和"检索得准不准"是两个独立能力, 混在一个指标里
+      会让"召回到了不该召回的片段"这种错误被平均掉。
+    """
+    from app.services.rag_service import rag_service
+
+    rag_service.init_index(rebuild_bm25=False, preload_reranker=False)
+    if rag_service._retriever is None:
+        print("检索器未就绪: 请确认 Milvus 已启动且知识库中已有数据。")
+        return 2
+
+    from app.core.workflow.rag_workflow import (
+        CONFIDENCE_LOW,
+        CONFIDENCE_OUT_OF_DOMAIN,
+        classify_domain,
+    )
+
+    retriever = rag_service._retriever
+    cases = load_dataset()
+
+    print("=" * 68)
+    print("拒答闸门评测 (判据: 向量最高原始相似度, 不含重排/LLM)")
+    print("=" * 68)
+    print(
+        f"阈值: 拒答线={settings.DOMAIN_SCORE_REJECT} "
+        f"低置信线={settings.DOMAIN_SCORE_CAUTION}"
+    )
+    print("-" * 68)
+
+    unresolvable = [c for c in cases if not c.resolvable]
+    resolvable = [c for c in cases if c.resolvable]
+
+    refused_out, missed_out, low_out = 0, 0, 0
+    refused_in, low_in = 0, 0
+    misses = []
+
+    for case in unresolvable:
+        score = retriever.vector_top_score(case.question)
+        level = classify_domain(score)
+        if level == CONFIDENCE_OUT_OF_DOMAIN:
+            refused_out += 1
+        elif level == CONFIDENCE_LOW:
+            low_out += 1
+            missed_out += 1
+            misses.append((case, score, "低置信(未拒答)"))
+        else:
+            missed_out += 1
+            misses.append((case, score, "放行"))
+        print(f"  [超纲] {case.id:<4} {score:.4f}  {level:<14} {case.question[:28]}")
+
+    print("-" * 68)
+    for case in resolvable:
+        score = retriever.vector_top_score(case.question)
+        level = classify_domain(score)
+        if level == CONFIDENCE_OUT_OF_DOMAIN:
+            refused_in += 1
+            misses.append((case, score, "误杀(被拒答)"))
+        elif level == CONFIDENCE_LOW:
+            low_in += 1
+
+    print(f"超纲题拒答准确率 : {refused_out}/{len(unresolvable)} "
+          f"= {refused_out / len(unresolvable):.4f}" if unresolvable else "无超纲样本")
+    if low_out:
+        print(f"  其中 {low_out} 条只降到低置信而未拒答 (未达硬拒答标准)")
+    print(f"库内问题误杀率   : {refused_in}/{len(resolvable)} = "
+          f"{refused_in / len(resolvable):.4f}")
+    print(f"库内问题低置信率 : {low_in}/{len(resolvable)} = {low_in / len(resolvable):.4f}")
+
+    if misses:
+        print("-" * 68)
+        print("需要关注的条目:")
+        for case, score, what in misses:
+            print(f"  [{what}] {case.id} score={score:.4f} {case.question[:32]}")
+
+    report = {
+        "timestamp": datetime.now().strftime("%Y%m%d-%H%M%S"),
+        "mode": "gate",
+        "thresholds": {
+            "reject": settings.DOMAIN_SCORE_REJECT,
+            "caution": settings.DOMAIN_SCORE_CAUTION,
+        },
+        "unresolvable_count": len(unresolvable),
+        "resolvable_count": len(resolvable),
+        "refusal_accuracy": refused_out / len(unresolvable) if unresolvable else None,
+        "false_refusal_rate": refused_in / len(resolvable) if resolvable else None,
+        "low_confidence_rate_in_scope": low_in / len(resolvable) if resolvable else None,
+    }
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    path = REPORT_DIR / f"run-gate-{report['timestamp']}.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("-" * 68)
+    print(f"报告已写入: {path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="检索评测")
     parser.add_argument("--check", action="store_true", help="只做评测集自检")
     parser.add_argument("--top-k", type=int, default=5, help="评测用的 top_k")
-    parser.add_argument("--mode", choices=["direct", "agentic"], default="direct")
+    parser.add_argument("--mode", choices=["direct", "agentic", "gate"], default="direct")
     parser.add_argument("--dataset", default="data/eval/legal_qa_eval.jsonl")
     args = parser.parse_args()
 
@@ -224,6 +322,8 @@ def main() -> int:
 
     if args.check:
         return run_check()
+    if args.mode == "gate":
+        return asyncio.run(run_gate_eval())
     return asyncio.run(run_eval(args.top_k, args.mode))
 
 

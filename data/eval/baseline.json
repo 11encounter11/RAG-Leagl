@@ -56,5 +56,19 @@
       "mrr": 0.625,
       "ndcg": 0.7153
     }
+  },
+  "refusal_gate": {
+    "source_report": "data/eval/reports/run-gate-20260921-123447.json",
+    "judge": "向量检索最高原始相似度(不依赖重排器/LLM)",
+    "thresholds": {
+      "reject": 0.24,
+      "caution": 0.28
+    },
+    "hard_refusal_accuracy": 0.5,
+    "flagged_rate_out_of_scope": 1.0,
+    "false_refusal_rate": 0.0,
+    "false_low_confidence_rate": 0.027777777777777776,
+    "note": "硬拒答 2/4, 另 2 条降级为低置信提示 => 超纲题 4/4 都得到了某种警示, 且库内问题零误杀。阈值由 scripts/calibrate_domain_gate.py 标定; 超纲样本仅 4 条, 扩大评测集后必须重标。",
+    "before_fix": 0.0
   }
 }

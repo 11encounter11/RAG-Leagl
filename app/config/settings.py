@@ -67,6 +67,25 @@ class Settings(BaseSettings):
     ENABLE_RERANK: bool = True
     ENABLE_CITATION_VERIFY: bool = True
 
+    # ===== 拒答闸门(独立判据) =====
+    # 为什么必须独立于重排器: 拒答是法律场景的安全底线, 而重排器是可选的、
+    # 可能在环境里加载不起来的组件。把底线建立在可选组件之上, 结果是
+    # "重排器加载失败 -> 该拒答的全都不拒答"(实测拒答准确率 0%)。
+    #
+    # 判据: 向量检索的**最高原始相似度**。它与知识库主题的相关程度直接对应,
+    # 不经过 RRF 融合、不依赖重排器。
+    #
+    # 阈值是标定出来的, 不是拍的: 用 scripts/calibrate_domain_gate.py 在评测集上
+    # 跑出分布, 再选点。当前值来自 36 条库内问题 + 4 条超纲问题的实测分布
+    # (库内 min=0.259 / 超纲 max=0.275), **样本量很小, 扩大评测集后必须重标**。
+    ENABLE_DOMAIN_GATE: bool = True
+    # 低于此值: 判定为"知识库外", 直接拒答
+    DOMAIN_SCORE_REJECT: float = 0.24
+    # 低于此值(但不低于 REJECT): 照常回答, 但标记为低置信, 提示用户核对
+    # 采用两档而不是单阈值, 是因为实测下两个分布**区间重叠**:
+    # 任何单阈值都必然误判一边。与其假装能一刀切, 不如把不确定显式表达出来。
+    DOMAIN_SCORE_CAUTION: float = 0.28
+
     # ===== Embedding Model =====
     EMBEDDING_MODEL_NAME: str = "embedding-3"
     # 向量维度。**0 表示自动探测**(从嵌入模型实际输出测量)。
