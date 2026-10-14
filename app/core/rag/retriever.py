@@ -182,9 +182,9 @@ class HybridRetriever:
         self._last_rerank_ok = False
         self._bm25: Optional[BM25L] = None
 
-        self._vector_retriever = self._index.as_retriever(
-            similarity_top_k=max(settings.BM25_TOP_K * 2, settings.TOP_K)
-        )
+        self._vector_top_k = max(settings.BM25_TOP_K * 2, settings.TOP_K)
+        # 这个 retriever **不带**时效过滤，供拒答闸门使用（见 vector_top_score 的说明）。
+        self._vector_retriever = self._index.as_retriever(similarity_top_k=self._vector_top_k)
         if self._nodes:
             self.build_bm25_index(self._nodes)
 
@@ -251,6 +251,12 @@ class HybridRetriever:
           - 重排器是可选组件, 而拒答是安全底线, 不能依赖它。
         代价是每次多一次嵌入调用(约几十毫秒), 相比 LLM 调用可以忽略;
         换来的是拒答闸门在重排器不可用时依然有效。
+
+        **刻意不套时效过滤**（与 retrieve_raw 不同）：
+          1. 闸门问的是"这个问题属不属于本知识库的**领域**"，而不是"属不属于现行版本"。
+             一个问旧法条的问题仍然是法律领域问题，不该因此被拒。
+          2. 阈值 0.26 / 0.30 是在**未过滤**的语料上标定的。换掉候选集会改变分数分布，
+             等于让标定作废 —— 要改就得重跑 `scripts/calibrate_domain_gate.py`。
         """
         try:
             nodes = self._vector_retriever.retrieve(query)
@@ -269,7 +275,7 @@ class HybridRetriever:
         if not query or not query.strip():
             return []
 
-        vector_nodes = self._vector_retriever.retrieve(query)
+        vector_nodes = self._vector_retrieve(query)
         logger.debug("[HybridRetriever] 向量召回 %d 条", len(vector_nodes))
 
         bm25_nodes: List[NodeWithScore] = []
@@ -282,6 +288,62 @@ class HybridRetriever:
         fused = self._reciprocal_rank_fusion(vector_nodes, bm25_nodes)
         logger.debug("[HybridRetriever] RRF 融合后 %d 条", len(fused))
         return fused
+
+    # ------------------------------------------------------------
+    # 检索层过滤（T-27 / T-28）
+    # ------------------------------------------------------------
+    def _filter_conditions(self) -> List[tuple[str, str]]:
+        """当前生效的元数据过滤条件 `[(字段, 期望值)]` —— **唯一来源**。
+
+        目前只有一条：**排除非现行有效的版本**（需求 F4.2）。
+
+        为什么必须过滤，而不是让模型自己忽略旧条文：
+            语料里同一部法有两个版本（劳动法 2009/2018、社保法 2010/2018），
+            同一条条文会有两条记录（例如劳动法第二十一条，两条内容还完全一样）。
+            靠提示词让 LLM"别看废止的"是概率保证；在这里过滤是**确定性保证**。
+
+        为什么必须在**取 top-k 之前**过滤：
+            top-k 的坑位有限。先召回再筛，等于让旧版本占掉一半坑位，
+            有效版本被挤出去 —— 召回率会掉，而且掉得不明显（只是"排得靠后了"）。
+
+        两条检索路径共用这份条件：
+            - **向量（Milvus）**：llama-index 会把它翻成 Milvus 的 `expr` **下推**（真过滤）
+            - **BM25（内存索引）**：内存索引没有查询层，只能在打分后、取 top-k 前筛
+            共用同一份条件，避免"两条路各写一套过滤规则"然后慢慢长歪。
+
+        **每次都读 settings 而不是构造时读一次** —— 开关改完立刻生效，不用重启
+        （对应需求 F6.3「开关必须在服务端生效且能被验证」）。
+        """
+        if not settings.ENABLE_VALIDITY_FILTER:
+            return []
+        return [("validity_status", "effective")]
+
+    def _build_metadata_filters(self) -> Optional["MetadataFilters"]:
+        """把过滤条件下推给 Milvus（`MetadataFilters` → `expr`）。"""
+        conditions = self._filter_conditions()
+        if not conditions:
+            return None
+        from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
+
+        return MetadataFilters(
+            filters=[MetadataFilter(key=key, value=value) for key, value in conditions]
+        )
+
+    def passes_filter(self, metadata: dict) -> bool:
+        """内存索引（BM25）那一路用的谓词 —— 与 Milvus 那份条件同源。"""
+        return all(metadata.get(key) == value for key, value in self._filter_conditions())
+
+    def _vector_retrieve(self, query: str) -> List[NodeWithScore]:
+        """向量召回（带元数据过滤）。
+
+        `as_retriever` 每次调用会新建一个轻量对象（就是这个 retriever 本身），
+        开销可忽略；换来的是"过滤条件可以随配置变化"。
+        """
+        retriever = self._index.as_retriever(
+            similarity_top_k=self._vector_top_k,
+            filters=self._build_metadata_filters(),
+        )
+        return retriever.retrieve(query)
 
     def rerank(
         self,
@@ -371,6 +433,12 @@ class HybridRetriever:
         scores = self._bm25.get_scores(tokenize_zh(query))
         if len(scores) == 0:
             return []
+
+        # 过滤必须在取 top-k **之前**做：内存索引没有查询层可下推，
+        # 若等取完 top-k 再筛，坑位已经被过滤掉的条目占住了（见 _filter_conditions 的说明）。
+        eligible = [self.passes_filter(node.metadata or {}) for node in self._nodes]
+        if not all(eligible):
+            scores = np.where(eligible, scores, -np.inf)
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         results: List[NodeWithScore] = []

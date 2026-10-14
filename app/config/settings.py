@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     ENABLE_HYDE: bool = False          # 默认关: 成本高, 收益尚未被评测验证
     ENABLE_RERANK: bool = True
     ENABLE_CITATION_VERIFY: bool = True
+    # 时效过滤开关（T-27 / T-28，需求 F4.2）。
+    #
+    # 开（默认）：向量召回时把 `validity_status == "effective"` 下推到 Milvus 查询表达式，
+    #             已修订/已废止的版本**根本不会进入候选** —— 不依赖 LLM 自觉忽略旧条文。
+    # 关：     不做时效过滤，旧版本也会被召回（用于对照验证"过滤确实生效"，
+    #             以及 F4.3「用户明确查历史法条」的场景）。
+    #
+    # 为什么放在检索层而不是生成层：靠提示词让模型"别看废止条文"是概率保证，
+    # 而在查询表达式里过滤是**确定性保证**（见 02-设计文档.md §6.1 的说明）。
+    ENABLE_VALIDITY_FILTER: bool = True
 
     # ===== 拒答闸门(独立判据) =====
     # 为什么必须独立于重排器: 拒答是法律场景的安全底线, 而重排器是可选的、

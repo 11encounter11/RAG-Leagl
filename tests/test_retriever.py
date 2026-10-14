@@ -46,8 +46,11 @@ class _StubIndex:
     def __init__(self, results):
         self._results = results
         self.retriever = _StubVectorRetriever(results)
+        # 记录最近一次 as_retriever 收到的过滤条件 —— 用来断言"过滤确实下推了"
+        self.last_filters = "NOT_CALLED"
 
-    def as_retriever(self, similarity_top_k=None):
+    def as_retriever(self, similarity_top_k=None, filters=None):
+        self.last_filters = filters
         return self.retriever
 
 
@@ -71,6 +74,10 @@ class _FakeReranker:
 
 
 def _node(text: str, **metadata) -> TextNode:
+    # 真实 chunk 一定带 validity_status（元数据契约的必填字段，见 metadata.py）。
+    # 这里给个真实默认值，避免测试桩造出"现实中不存在"的节点 ——
+    # 时效过滤开启时，缺这个字段的片段会被判为不合格而排除（fail-closed）。
+    metadata.setdefault("validity_status", "effective")
     return TextNode(text=text, metadata=metadata)
 
 
@@ -294,6 +301,102 @@ def test_empty_query_returns_nothing():
 
 
 # ============================================================
+# 时效过滤（T-27 / T-28）
+#
+# 语料里同一部法有两个版本（劳动法 2009/2018、社保法 2010/2018），同一条条文会有
+# 两条记录。过滤必须在**取 top-k 之前**生效，否则坑位被旧版本占掉、有效版本被挤出。
+# ============================================================
+def _eff(text: str) -> TextNode:
+    return TextNode(text=text, metadata={"validity_status": "effective", "article_no": text})
+
+
+def _amd(text: str) -> TextNode:
+    return TextNode(text=text, metadata={"validity_status": "amended", "article_no": text})
+
+
+def test_filter_conditions_follow_the_switch(monkeypatch):
+    from app.config.settings import settings
+
+    retriever, _ = _build([NodeWithScore(node=_eff("x"), score=0.9)])
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    assert retriever._filter_conditions() == [("validity_status", "effective")]
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", False)
+    assert retriever._filter_conditions() == []
+
+
+def test_metadata_filters_are_pushed_to_milvus(monkeypatch):
+    """向量那一路：过滤应作为 filters 传给 as_retriever（→ Milvus expr 下推）。"""
+    from app.config.settings import settings
+
+    retriever, index = _build([NodeWithScore(node=_eff("x"), score=0.9)])
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    retriever.retrieve_raw("查询")
+    assert index.last_filters is not None, "开启时效过滤时，必须把 filters 传给 Milvus"
+    assert index.last_filters.filters[0].key == "validity_status"
+    assert index.last_filters.filters[0].value == "effective"
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", False)
+    retriever.retrieve_raw("查询")
+    assert index.last_filters is None, "关闭时效过滤时不应传 filters"
+
+
+def test_passes_filter_predicate(monkeypatch):
+    from app.config.settings import settings
+
+    retriever, _ = _build([NodeWithScore(node=_eff("x"), score=0.9)])
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    assert retriever.passes_filter({"validity_status": "effective"}) is True
+    assert retriever.passes_filter({"validity_status": "amended"}) is False
+    assert retriever.passes_filter({}) is False, "缺字段不该被当成合格"
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", False)
+    assert retriever.passes_filter({"validity_status": "amended"}) is True
+
+
+def test_bm25_path_excludes_non_effective_versions(monkeypatch):
+    """BM25 是内存索引，没有查询层可下推 —— 必须在取 top-k 之前筛。"""
+    from app.config.settings import settings
+
+    nodes = [_amd("旧版条文 甲乙丙"), _eff("现行条文 甲乙丙")]
+    retriever = HybridRetriever(_StubIndex([]), nodes=nodes, use_reranker=False)
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    kept = retriever._bm25_retrieve("甲乙丙", top_k=5)
+    assert [n.node.text for n in kept] == ["现行条文 甲乙丙"]
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", False)
+    both = retriever._bm25_retrieve("甲乙丙", top_k=5)
+    assert len(both) == 2, "关掉开关后旧版本应能召回"
+
+
+def test_bm25_filter_happens_before_top_k(monkeypatch):
+    """关键：过滤必须在取 top-k **之前**。
+
+    构造 3 条语料，让**被过滤掉的那两条**打分更高。若实现是"先取 top-2 再筛"，
+    结果会是空的；正确实现应返回第 3 条（唯一合格的那条）。
+    """
+    from app.config.settings import settings
+
+    # 旧版本条文重复更多次关键词 → BM25 分更高，但会被过滤掉
+    nodes = [
+        _amd("甲乙丙 甲乙丙 甲乙丙"),
+        _amd("甲乙丙 甲乙丙"),
+        _eff("甲乙丙"),
+    ]
+    retriever = HybridRetriever(_StubIndex([]), nodes=nodes, use_reranker=False)
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+
+    kept = retriever._bm25_retrieve("甲乙丙", top_k=2)
+    assert [n.node.metadata["validity_status"] for n in kept] == ["effective"], (
+        "top-2 若被旧版本占掉，说明过滤发生在 top-k 之后"
+    )
+
+
+# ============================================================
 # BM25 语料可重建
 # ============================================================
 
@@ -321,7 +424,11 @@ def test_bm25_path_participates_in_recall_after_corpus_rebuild():
     ]
     retriever, _ = _build([], nodes_by_id=[])
     retriever.set_bm25_corpus_from_records(
-        [{"id": node.node_id, "text": node.text, "metadata": {}} for node in corpus]
+        [
+            # metadata 要带 validity_status —— 真实重建链路从 Milvus 读回的元数据里有它
+            {"id": node.node_id, "text": node.text, "metadata": dict(node.metadata)}
+            for node in corpus
+        ]
     )
     hits = retriever._bm25_retrieve("经济补偿的年限怎么算", top_k=5)
     assert hits, "BM25 应能召回含'经济补偿'的片段"
