@@ -42,4 +42,5 @@ openpyxl>=3.1.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 python-dotenv>=1.0.0
-sse-starlette>=2.1.0
+# 注: 未引入 sse-starlette —— SSE 输出在 app/utils/sse.py 里只有一行格式化,
+# 没必要为此多一个依赖(2026-10-14 清理)。
