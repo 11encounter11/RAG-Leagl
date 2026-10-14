@@ -28,6 +28,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
@@ -122,7 +123,7 @@ def create_rag_workflow():
     # ============================================================
     # 节点
     # ============================================================
-    async def analyze_query(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def analyze_query(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """查询改写。"""
         query = state["query"]
         if not settings.ENABLE_QUERY_REWRITE:
@@ -147,7 +148,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, "query_analysis"),
         }
 
-    async def generate_hyde(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def generate_hyde(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """HyDE: 生成假设性答案用于检索。默认关闭。"""
         if not settings.ENABLE_HYDE:
             return {"workflow_steps": _step(state, "hyde:skipped")}
@@ -165,7 +166,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, "hyde_generation"),
         }
 
-    async def hybrid_retrieve(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def hybrid_retrieve(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """多路召回 —— 只召回, 不重排。"""
         retriever = _get_retriever(config)
         params = state.get("retry_params") or params_for_round(0)
@@ -214,7 +215,7 @@ def create_rag_workflow():
             "workflow_steps": list(state.get("workflow_steps", [])) + steps,
         }
 
-    async def assess_domain(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def assess_domain(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """拒答闸门: 用向量原始相似度判断问题是否属于本知识库领域。
 
         独立于重排器 —— 这是本次测试暴露的核心设计缺陷的修正:
@@ -247,7 +248,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, f"domain_gate({score:.4f}->{level})"),
         }
 
-    async def rerank(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def rerank(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """统一精排 —— **整个流程里只在这里重排一次**。"""
         retriever = _get_retriever(config)
         params = state.get("retry_params") or params_for_round(0)
@@ -281,7 +282,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, f"rerank(threshold={threshold},top_k={top_k})"),
         }
 
-    async def reflect(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def reflect(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """反思: 评估检索结果是否足以回答问题。"""
         reranked_docs = state.get("reranked_docs") or []
         if not reranked_docs:
@@ -328,7 +329,7 @@ def create_rag_workflow():
             return "retry"
         return "refuse"
 
-    async def retry_handler(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def retry_handler(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """重试: 推进到下一档参数, 清空上一轮结果。"""
         retry_count = state.get("retry_count", 0) + 1
         new_params = params_for_round(retry_count)
@@ -343,7 +344,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, f"retry#{retry_count}({new_params})"),
         }
 
-    async def refuse(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def refuse(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """拒答: 依据不足或问题超出知识库范围时明确告知, 而不是编造。"""
         out_of_domain = state.get("confidence_level") == CONFIDENCE_OUT_OF_DOMAIN
         reason = (
@@ -363,7 +364,7 @@ def create_rag_workflow():
             "workflow_steps": _step(state, f"refuse({reason})"),
         }
 
-    async def generate(state: RAGWorkflowState, config: Optional[dict] = None) -> dict:
+    async def generate(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """生成前的收尾: 整理引用来源。
 
         真正的 LLM 生成在 chat_service 里做(为了支持流式), 这里只准备状态。

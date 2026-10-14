@@ -2,6 +2,8 @@
 应用配置管理
 从 .env 文件读取配置，提供全局配置对象
 """
+import os
+
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -18,7 +20,9 @@ class Settings(BaseSettings):
     MYSQL_PORT: int = 3307
     MYSQL_USER: str = "rag_user"
     MYSQL_PASSWORD: str = "rag_password"
-    MYSQL_DATABASE: str = "rag_system"
+    # 必须与 docker-compose.yml 的建库名一致(现状 P1-18: 默认值曾为 rag_system,
+    # 与 compose 的 legal_rag 不匹配, 未设置 .env 时启动即连不上)。
+    MYSQL_DATABASE: str = "legal_rag"
 
     # ===== Redis =====
     REDIS_HOST: str = "localhost"
@@ -34,7 +38,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 512
     CHUNK_OVERLAP: int = 50
     TOP_K: int = 5
-    SIMILARITY_THRESHOLD: float = 0.5
+    # 作用在重排归一化分上的阈值。0.1 是在 52 题评测集上四组对照标定出来的
+    # (见 07-P0端到端验收与重排收益.md §3), 不是拍的; 必须与 .env 保持一致。
+    SIMILARITY_THRESHOLD: float = 0.1
     BM25_TOP_K: int = 10
     RERANK_TOP_N: int = 5
     # 重排器一次性最多精排多少条候选。
@@ -58,15 +64,26 @@ class Settings(BaseSettings):
     # onnx/openvino 后端配合量化模型可以显著降低内存与提升 CPU 推理速度,
     # 但需要模型本身已导出为对应格式(或安装 optimum 现场导出), 不是换个字符串就生效。
     RERANK_BACKEND: str = "torch"
+    # 是否让 HuggingFace 走离线模式(只读本地缓存, 不发网络请求)。
+    #
+    # 为什么默认开: sentence-transformers 加载本地已缓存的模型时, 仍会先向
+    # huggingface.co 发 HEAD 请求核对文件是否有更新。国内网络下这个请求会超时,
+    # 然后按 1s/2s/4s... 退避重试 5 次 —— 表现为"启动卡住好几分钟",
+    # 很容易被误判成 OOM 或死机(见 docs/06-P0测试执行报告.md §3.1)。
+    #
+    # 代价: 模型**未**缓存时会直接报错而不是自动下载。需要首次下载时,
+    # 在 .env 里临时设为 false 即可。
+    HF_HUB_OFFLINE: bool = True
 
     # ===== Agentic RAG Settings =====
     REFLECTION_THRESHOLD: float = 0.6
     MAX_RETRIES: int = 2
-    QUERY_REWRITE_MODEL: str = "glm-5.3-flash"
-    HYDE_MODEL: str = "glm-5.3-flash"
+    # 各节点的模型(2026-10-14 起统一用 DeepSeek; 智谱的额度专供 embedding)
+    QUERY_REWRITE_MODEL: str = "deepseek-v4.1-flash"
+    HYDE_MODEL: str = "deepseek-v4.1-flash"
     # 反思节点专用的模型。刻意与改写模型分开配置 —— 用同一个模型评估自己
     # 的检索结果属于自评自夸, 至少要让这件事是显式可调的。
-    REFLECTION_MODEL: str = "glm-5.3-flash"
+    REFLECTION_MODEL: str = "deepseek-v4.1-flash"
 
     # ===== 功能开关 =====
     # P0 阶段先放在配置里(服务端生效、可验证); P3 迁移到数据库后台管理。
@@ -110,6 +127,11 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = True
+    # CORS 允许的来源(逗号分隔)。
+    # 刻意不用 "*": 与 allow_credentials=True 组合会被浏览器直接拒绝,
+    # 且等价于完全放开(见 02-设计文档.md §13 P1 #20)。
+    # 默认只放本机前端(Streamlit 默认端口 8501)。
+    CORS_ALLOW_ORIGINS: str = "http://localhost:8501,http://127.0.0.1:8501"
 
     # ===== Milvus Collection =====
     MILVUS_COLLECTION_NAME: str = "knowledge_base"
@@ -135,6 +157,11 @@ class Settings(BaseSettings):
         """Milvus 连接 URI"""
         return f"http://{self.MILVUS_HOST}:{self.MILVUS_PORT}"
 
+    @property
+    def cors_origins(self) -> list[str]:
+        """把逗号分隔的 CORS 来源解析成列表。"""
+        return [o.strip() for o in self.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -142,3 +169,10 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
+
+# 必须在任何 huggingface_hub 相关库被导入**之前**设置:
+# huggingface_hub 在 import 时就把 HF_HUB_OFFLINE 读进常量, 之后再设无效。
+# 本模块是所有入口(应用、脚本、测试)最先导入的模块之一, 放在这里最稳妥 ——
+# 靠"记得在命令行手动加环境变量"是守不住的, 那条纪律早晚会被忘掉。
+if settings.HF_HUB_OFFLINE:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")

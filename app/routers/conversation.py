@@ -2,7 +2,7 @@
 会话路由 - 会话管理接口
 """
 from fastapi import APIRouter, HTTPException
-from app.models.schemas import ConversationInfo, MessageInfo
+from app.models.schemas import ConversationInfo, ConversationRenameRequest, MessageInfo
 from app.core.memory.db_store import db_manager
 
 router = APIRouter(prefix="/api/conversations", tags=["会话"])
@@ -55,3 +55,12 @@ async def delete_conversation(conversation_id: str):
 
     db_manager.delete_conversation(conversation_id)
     return {"message": "会话已删除"}
+
+
+@router.put("/{conversation_id}", summary="重命名会话")
+async def rename_conversation(conversation_id: str, payload: ConversationRenameRequest):
+    """重命名指定会话(需求 F5.1: 会话的创建/列表/重命名/删除)。"""
+    renamed = db_manager.rename_conversation(conversation_id, payload.title)
+    if not renamed:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"message": "会话已重命名", "id": conversation_id, "title": payload.title}

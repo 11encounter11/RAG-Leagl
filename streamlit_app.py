@@ -27,9 +27,8 @@ with st.sidebar:
     st.subheader("模型选择")
     model_choice = st.radio(
         "选择 LLM 模型",
-        ["glm-5.3-flash", "deepseek-v4.1-flash"],
+        ["deepseek-v4.1-flash"],
         format_func=lambda x: {
-            "glm-5.3-flash": "智谱 GLM-5.3-Flash",
             "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
         }[x],
     )
@@ -39,7 +38,7 @@ with st.sidebar:
     # 检索设置
     st.subheader("检索设置")
     top_k = st.slider("Top-K（返回片段数）", 1, 10, 5)
-    similarity_threshold = st.slider("相似度阈值", 0.0, 1.0, 0.5, 0.05)
+    similarity_threshold = st.slider("相似度阈值（重排归一化分，默认=服务端标定的 0.1）", 0.0, 1.0, 0.1, 0.05)
 
     st.markdown("---")
 

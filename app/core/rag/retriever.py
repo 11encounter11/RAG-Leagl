@@ -176,6 +176,10 @@ class HybridRetriever:
         self._reranker: Any = None
         self._reranker_failed = False
         self._score_semantics_checked = False
+        # 上一次 rerank() 是否**真的**执行了重排。
+        # 为 False 时返回的分数仍是 RRF 原值(0.01~0.03 量级), 不是归一化相似度,
+        # 因而绝不能施加相似度阈值 —— 否则整路召回被静默误杀(见 retrieve 的说明)。
+        self._last_rerank_ok = False
         self._bm25: Optional[BM25L] = None
 
         self._vector_retriever = self._index.as_retriever(
@@ -288,9 +292,11 @@ class HybridRetriever:
         """对候选统一精排, 返回的分数已归一化到 [0,1]。"""
         top_n = top_n or settings.RERANK_TOP_N
         if not nodes:
+            self._last_rerank_ok = False
             return []
         if not self._use_reranker:
             logger.debug("[HybridRetriever] 重排已关闭, 直接取前 %d 条", top_n)
+            self._last_rerank_ok = False
             return nodes[:top_n]
         return self._rerank(query, nodes, top_n=top_n)
 
@@ -315,7 +321,9 @@ class HybridRetriever:
         )
 
         fused = self.retrieve_raw(query)
-        if not self._use_reranker or not fused:
+        if not fused:
+            return []
+        if not self._use_reranker:
             # 关闭重排时不做阈值过滤 —— RRF 分数是"多路排名倒数之和"(量级 0.01 上下),
             # 不是相似度。拿相似度阈值去卡它会把结果全部误杀, 这是最隐蔽的一类 bug:
             # 系统不报错, 只是永远返回空。
@@ -325,6 +333,19 @@ class HybridRetriever:
             return fused[:top_k]
 
         reranked = self.rerank(query, fused, top_n=max(top_k, settings.RERANK_TOP_N))
+
+        if not self._last_rerank_ok:
+            # 重排"配置上开着"但**实际没生效**(模型加载失败 / 打分抛异常)。
+            # 这与"重排被关闭"是同一个陷阱, 只是更隐蔽: 一旦在这里照常套阈值,
+            # RRF 分数(0.03 量级)会被 0.1 全部误杀 —— 表现为"系统什么也查不到",
+            # 而日志里只有一行 warning。加载失败在本机是真实场景(内存不足)。
+            logger.warning(
+                "[HybridRetriever] 重排未生效(模型未加载或执行失败), 当前分数为 RRF 原值, "
+                "跳过相似度阈值(%.3f), 直接返回前 %d 条",
+                similarity_threshold,
+                top_k,
+            )
+            return reranked[:top_k]
 
         if similarity_threshold and similarity_threshold > 0:
             kept = [node for node in reranked if (node.score or 0.0) >= similarity_threshold]
@@ -470,15 +491,18 @@ class HybridRetriever:
         top_n: int = 5,
     ) -> List[NodeWithScore]:
         if not nodes:
+            self._last_rerank_ok = False
             return []
         self._load_reranker()
         if self._reranker is None:
+            self._last_rerank_ok = False
             return nodes[:top_n]
 
         try:
             raw_ranked = self._reranker.postprocess_nodes(nodes, query_str=query)
         except Exception as exc:  # noqa: BLE001
             logger.error("[HybridRetriever] 重排执行失败, 退回召回顺序: %s", exc)
+            self._last_rerank_ok = False
             return nodes[:top_n]
 
         normalized: List[NodeWithScore] = []
@@ -493,6 +517,7 @@ class HybridRetriever:
         self._check_score_semantics(raw_scores)
 
         normalized.sort(key=lambda item: item.score or 0.0, reverse=True)
+        self._last_rerank_ok = True
         logger.info(
             "[HybridRetriever] 重排完成: 候选 %d 条, 归一化后 top3 = %s",
             len(normalized),

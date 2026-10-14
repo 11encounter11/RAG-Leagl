@@ -249,6 +249,43 @@ def test_threshold_skipped_when_reranker_disabled():
     assert len(kept) == 1, "关闭重排后仍应返回结果, 而不是被阈值全过滤"
 
 
+def test_threshold_skipped_when_reranker_fails_to_load():
+    """回归: 重排"配置开着"但**加载失败**时, 同样不能套相似度阈值。
+
+    这是真实踩过的坑(2026-10-14): 开发机内存不足, CrossEncoder 加载抛
+    OSError(页面文件太小), 于是分数退回 RRF 原值(0.03 量级), 而阈值 0.1
+    把它们全部误杀 —— 表现是"评测 52 题全部召回为空、系统什么都查不到",
+    日志里只有一行 warning。
+
+    与 `use_reranker=False` 是同一个陷阱的两个入口, 之前只堵了后者。
+    """
+    node = _node("某条文")
+    index = _StubIndex([NodeWithScore(node=node, score=0.03)])
+    retriever = HybridRetriever(index, nodes=[], use_reranker=True)
+
+    # 模拟"加载失败": _load_reranker 之后 self._reranker 仍为 None
+    retriever._load_reranker = lambda: None
+    retriever._reranker = None
+
+    kept = retriever.retrieve("查询", top_k=5, similarity_threshold=0.1)
+
+    assert len(kept) == 1, "重排器不可用时不应把 RRF 分数当相似度去卡阈值"
+    assert retriever._last_rerank_ok is False
+
+
+def test_threshold_applied_only_when_rerank_really_ran():
+    """对照组: 重排真的执行过时, 阈值必须照常生效(别把修复做成"永远不过阈值")。"""
+    node = _node("低分条文")
+    index = _StubIndex([NodeWithScore(node=node, score=0.03)])
+    retriever = HybridRetriever(index, nodes=[], use_reranker=True)
+    retriever._reranker = _FakeReranker({node.text: -4.0})  # 归一化后接近 0
+
+    kept = retriever.retrieve("查询", top_k=5, similarity_threshold=0.5)
+
+    assert retriever._last_rerank_ok is True
+    assert kept == [], "重排生效时阈值仍应把低分候选过滤掉"
+
+
 def test_empty_query_returns_nothing():
     node = _node("某条文")
     retriever, _ = _build([NodeWithScore(node=node, score=0.9)])

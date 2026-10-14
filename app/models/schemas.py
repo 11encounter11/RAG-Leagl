@@ -9,8 +9,12 @@ from enum import Enum
 
 # ===== 模型选择 =====
 class ModelName(str, Enum):
-    """支持的模型列表"""
-    GLM_FLASH = "glm-5.3-flash"
+    """支持的模型列表。
+
+    2026-10-14 起只保留 DeepSeek: 智谱账号的额度专用于 embedding(见
+    app/core/llm/router.py 的说明)。把 GLM 从枚举里删掉而不是留着可选,
+    是为了让"不支持"在请求校验阶段就报错, 而不是等调用时才发现。
+    """
     DEEPSEEK_FLASH = "deepseek-v4.1-flash"
 
 
@@ -18,10 +22,13 @@ class ModelName(str, Enum):
 class ChatRequest(BaseModel):
     """聊天请求"""
     message: str = Field(..., min_length=1, description="用户消息")
-    model_name: ModelName = Field(ModelName.GLM_FLASH, description="选择的模型")
+    model_name: ModelName = Field(ModelName.DEEPSEEK_FLASH, description="选择的模型")
     conversation_id: Optional[str] = Field(None, description="会话ID，不传则创建新会话")
     top_k: Optional[int] = Field(5, description="检索返回的文档片段数")
-    similarity_threshold: Optional[float] = Field(0.5, description="相似度阈值")
+    similarity_threshold: Optional[float] = Field(
+        None,
+        description="相似度阈值(作用于重排归一化分)。不传则用服务端标定值 settings.SIMILARITY_THRESHOLD",
+    )
     use_agentic_rag: Optional[bool] = Field(True, description="是否启用 Agentic RAG 工作流")
 
 
@@ -93,7 +100,12 @@ class SSEChatResponse(BaseModel):
 class ConversationCreate(BaseModel):
     """创建会话"""
     title: Optional[str] = Field("新对话", description="会话标题")
-    model_name: ModelName = Field(ModelName.GLM_FLASH, description="默认模型")
+    model_name: ModelName = Field(ModelName.DEEPSEEK_FLASH, description="默认模型")
+
+
+class ConversationRenameRequest(BaseModel):
+    """重命名会话(需求 F5.1)"""
+    title: str = Field(..., min_length=1, max_length=200, description="新的会话标题")
 
 
 class ConversationInfo(BaseModel):
@@ -125,7 +137,6 @@ class DocumentInfo(BaseModel):
     file_size: int
     chunk_count: int
     status: str
-    tenant_id: Optional[str] = None
     kb_id: Optional[str] = None
     doc_type: Optional[str] = None
     doc_type_source: Optional[str] = None

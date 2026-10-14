@@ -2,9 +2,13 @@
 向量化模块 - 将文本转换为向量
 使用智谱 Embedding API（无需本地下载模型）
 """
+import logging
+
 from llama_index.embeddings.zhipuai import ZhipuAIEmbedding
 
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder:
@@ -18,7 +22,7 @@ class Embedder:
     def embed_model(self) -> ZhipuAIEmbedding:
         """懒加载 embedding 模型"""
         if self._embed_model is None:
-            print("[Embedder] 初始化智谱 Embedding API (embedding-3)")
+            logger.info("[Embedder] 初始化智谱 Embedding API (embedding-3)")
             self._embed_model = ZhipuAIEmbedding(
                 api_key=self.api_key,
                 model="embedding-3",

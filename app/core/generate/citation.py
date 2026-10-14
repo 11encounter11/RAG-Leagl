@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, List
 
 # ---- 编号格式: 只有这一处定义 ----
@@ -41,6 +42,28 @@ CITATION_INSTRUCTION = (
     "5. 如果用户描述的事实不足以判断，先追问缺失的关键事实（如工作年限、所在城市、"
     "是否签订书面合同等），而不是直接给出结论。"
 )
+
+
+# ---- 引用编号提取: 形如 [1] / [12]。只认纯数字, 不匹配 "[来源: 文件名]" 这类旧格式 ----
+_CITATION_INDEX_RE = re.compile(r"\[(\d{1,3})\]")
+
+
+def extract_citation_indices(answer: str) -> List[int]:
+    """从回答里抽出所有 [编号] 引用, 返回去重后的编号列表(升序)。"""
+    return sorted({int(n) for n in _CITATION_INDEX_RE.findall(answer or "")})
+
+
+def verify_citations(answer: str, sources: Iterable[Any]) -> List[int]:
+    """校验回答里的引用编号是否都能对应到本次返回的来源。
+
+    返回"对不上"的编号列表(空列表 = 通过)。合法编号范围与上下文里的编号一致:
+    1..len(sources)。
+
+    覆盖的是"模型凭编号写了个不存在的引用"(例如只给了 3 条却写 [7]);
+    "法条是否真实存在于知识库"需要查 law_articles, 属 P1(见 02-设计文档.md §6.6)。
+    """
+    total = len(list(sources or []))
+    return [i for i in extract_citation_indices(answer) if i < 1 or i > total]
 
 
 def _meta(node: Any) -> dict:

@@ -4,8 +4,12 @@ LLM 路由器 - 策略模式的核心
 """
 from app.config.settings import settings
 from app.core.llm.base import BaseLLM
-from app.core.llm.glm import GLMFlashLLM
 from app.core.llm.deepseek import DeepSeekFlashLLM
+
+# 只注册 DeepSeek(2026-10-14 决定)。
+# 原因: 智谱账号的额度留给 embedding —— 入库与检索每一步都要转向量, 它才是必需项;
+# 生成环节用 DeepSeek 就够, 不必两家都占额度。
+# GLMFlashLLM 的实现保留在 app/core/llm/glm.py, 需要时在这里加回一行即可。
 
 
 class LLMRouter:
@@ -17,7 +21,6 @@ class LLMRouter:
 
     def __init__(self):
         self._strategies: dict[str, BaseLLM] = {
-            "glm-5.3-flash": GLMFlashLLM(api_key=settings.ZHIPU_API_KEY),
             "deepseek-v4.1-flash": DeepSeekFlashLLM(api_key=settings.DEEPSEEK_API_KEY),
         }
 
@@ -25,7 +28,7 @@ class LLMRouter:
         """
         根据模型名称获取对应的 LLM 实例
         Args:
-            model_name: 模型名称，如 "glm-5.3-flash" 或 "deepseek-v4.1-flash"
+            model_name: 模型名称，当前仅 "deepseek-v4.1-flash"
         Returns:
             对应的 LLM 实例
         Raises:

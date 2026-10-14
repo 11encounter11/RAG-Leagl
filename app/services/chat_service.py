@@ -14,6 +14,8 @@ import logging
 import time
 from typing import AsyncGenerator, Dict, List, Optional
 
+from app.config.settings import settings
+from app.core.generate.citation import verify_citations
 from app.core.generate.prompt import build_system_prompt
 from app.core.llm.router import llm_router
 from app.core.memory.db_store import db_manager
@@ -54,7 +56,10 @@ class ChatService:
         use_agentic_rag: bool,
     ) -> Dict:
         """统一的检索入口, 供流式与非流式共用。"""
-        if use_agentic_rag:
+        # 服务端开关优先: 关掉 ENABLE_AGENTIC_RAG 后, 无论请求怎么传都不走工作流
+        # (需求 F6.3 / 05 TC-F6.3-01: 开关必须**服务端生效**, 不能是"前端不传参"的伪生效)
+        use_workflow = bool(settings.ENABLE_AGENTIC_RAG and use_agentic_rag)
+        if use_workflow:
             result = await rag_service.retrieve_with_workflow(
                 message, top_k, similarity_threshold
             )
@@ -103,6 +108,31 @@ class ChatService:
         )
         # 流式场景会以空 answer 调用本方法(只取提示文案), 此时不要多出空行
         return f"{answer}\n\n---\n{note}" if answer else f"\n\n---\n{note}"
+
+    @staticmethod
+    def _citation_warning(answer: str, retrieval: Dict) -> str:
+        """引用编号校验(需求 F2.8 / 设计 §6.6 的降级分支)。
+
+        校验回答里出现的每个 [编号] 都能在本次返回的 sources 里找到对应项 ——
+        能抓住"模型凭编号写了个不存在的引用"(例如只给了 3 条却写 [7])。
+        法条是否真实存在于知识库(需查 law_articles)属 P1, 见 02 §6.6。
+
+        返回提示文案; 校验通过或开关关闭时返回空串。
+        """
+        if not settings.ENABLE_CITATION_VERIFY:
+            return ""
+        sources = retrieval.get("sources") or []
+        bad = verify_citations(answer, sources)
+        if not bad:
+            return ""
+        shown = "、".join(f"[{i}]" for i in bad)
+        logger.warning(
+            "[ChatService] 引用编号校验未通过: %s 不在本次 %d 条来源中", shown, len(sources)
+        )
+        return (
+            f"⚠️ 提示：本次回答中的引用 {shown} 未能在检索结果中找到对应依据，"
+            f"请以下方列出的原文为准，不要采信这几个编号。"
+        )
 
     def _build_messages(
         self,
@@ -175,6 +205,9 @@ class ChatService:
             llm = llm_router.get(model_name)
             messages = self._build_messages(message, retrieval["context"], conversation_id)
             response_text = self._with_caution(await llm.chat(messages), retrieval)
+            warning = self._citation_warning(response_text, retrieval)
+            if warning:
+                response_text = f"{response_text}\n\n---\n{warning}"
 
         message_id = self._persist(conversation_id, message, response_text, model_name)
 
@@ -265,6 +298,21 @@ class ChatService:
                     {
                         "type": "token",
                         "content": caution,
+                        "conversation_id": conversation_id,
+                        "model_name": model_name,
+                        "retrieval_count": len(nodes),
+                    }
+                )
+
+            # 引用编号校验未通过时, 同样在流末尾追加提示(降级输出, 不中断回答)
+            warning = self._citation_warning(full_response, retrieval)
+            if warning:
+                note = f"\n\n---\n{warning}"
+                full_response += note
+                yield await sse_format(
+                    {
+                        "type": "token",
+                        "content": note,
                         "conversation_id": conversation_id,
                         "model_name": model_name,
                         "retrieval_count": len(nodes),

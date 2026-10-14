@@ -2,18 +2,27 @@
 FastAPI 应用入口
 """
 import logging
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+# 支持 `python app/main.py` 直接启动。
+# 直接跑脚本时 sys.path[0] 是 app/ 而不是项目根, 于是 `import app.xxx` 会报
+# ModuleNotFoundError: No module named 'app'。scripts/ 下的脚本都有这一行,
+# 入口脚本同样需要 —— 否则唯一可用的启动方式是 `python -m app.main`,
+# 而这正是"照着文档做却起不来"的典型来源。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config.settings import settings
-from app.core.memory.db_store import db_manager
-from app.core.memory.redis_store import redis_store
-from app.services.rag_service import rag_service
-from app.core.llm.router import llm_router
-from app.routers import chat, knowledge, conversation
-from app.models.schemas import HealthStatus
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from app.config.settings import settings  # noqa: E402
+from app.core.memory.db_store import db_manager  # noqa: E402
+from app.core.memory.redis_store import redis_store  # noqa: E402
+from app.services.rag_service import rag_service  # noqa: E402
+from app.core.llm.router import llm_router  # noqa: E402
+from app.routers import chat, knowledge, conversation  # noqa: E402
+from app.models.schemas import HealthStatus  # noqa: E402
 
 # 统一日志配置。原来全靠 print, 出问题时既没有级别也没有模块名,
 # 排查只能靠猜 —— 这是 P0 里最便宜也最有价值的一处改动。
@@ -28,7 +37,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info("=" * 60)
-    logger.info("法律智能问答系统 - 启动中")
+    logger.info("个人法律知识问答助手 - 启动中")
     logger.info("=" * 60)
 
     db_manager.init_db()
@@ -50,17 +59,18 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="法律智能问答系统",
-    description="基于 RAG 的法律智能问答系统，支持多模型切换、流式输出、多轮对话",
+    title="个人法律知识问答助手",
+    description="个人自用的法律知识问答助手：按条切分、引用可核验、时效可标注、查不到就拒答",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# CORS 中间件
+# CORS 中间件。来源走配置(默认仅本机前端), 不用 "*" + allow_credentials=True
+# 的组合 —— 浏览器会直接拒绝该组合, 且等价于完全开放(见 02 §13 P1 #20)。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -3,13 +3,16 @@
 使用 LlamaIndex 的 DocumentLoaders 加载文档
 """
 import os
+import logging
 from pathlib import Path
 from typing import List
 from llama_index.core import Document
 from llama_index.core.node_parser import SimpleNodeParser
-from llama_index.readers.file import PyMuPDFReader, DocxReader
+from llama_index.readers.file import PyMuPDFReader
 
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 """
 原始文件（如劳动法.pdf）
@@ -28,7 +31,6 @@ class DocumentLoader:
     def __init__(self):
         self._readers = {
             ".pdf": PyMuPDFReader(),
-            ".docx": DocxReader(),
         }
 
     def load_file(self, file_path: str) -> List[Document]:
@@ -41,8 +43,12 @@ class DocumentLoader:
         """
         ext = Path(file_path).suffix.lower()
 
-        if ext in self._readers:
-            documents = self._readers[ext].load_data(file=Path(file_path))
+        if ext == ".pdf":
+            # PyMuPDFReader 的形参名是 file_path, 不是 file ——
+            # 传 file= 会直接 TypeError(由 tests/test_loader.py::test_load_pdf 抓出)。
+            documents = self._readers[".pdf"].load_data(file_path=Path(file_path))
+        elif ext == ".docx":
+            documents = self._load_docx(file_path)
         elif ext == ".xlsx":
             documents = self._load_excel(file_path)
         elif ext == ".csv":
@@ -60,6 +66,27 @@ class DocumentLoader:
             doc.metadata["filename"] = Path(file_path).name
 
         return documents
+
+    def _load_docx(self, file_path: str) -> List[Document]:
+        """加载 Word 文档: 用 python-docx 直接读段落。
+
+        刻意不用 llama_index 的 DocxReader —— 它依赖 docx2txt, 而 docx2txt
+        并不在 requirements 里, 实际调用会在运行时抛 ImportError
+        (由 tests/test_loader.py::test_load_docx 抓出)。
+        这里改用已经在依赖清单里的 python-docx。
+        """
+        try:
+            import docx
+
+            document = docx.Document(file_path)
+            text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
+            if not text.strip():
+                return []
+            return [Document(text=text, metadata={"source": file_path})]
+        except ImportError as e:  # pragma: no cover - 仅在依赖缺失时走到
+            raise ValueError(f"Word 文件加载失败(缺少 python-docx): {e}") from e
+        except Exception as e:
+            raise ValueError(f"Word 文件加载失败: {e}") from e
 
     def _load_excel(self, file_path: str) -> List[Document]:
         """加载 Excel 文件，将每行转换为结构化文本"""
@@ -144,11 +171,11 @@ class DocumentLoader:
                 try:
                     docs = self.load_file(file_path)
                     all_documents.extend(docs)
-                    print(f"[DocumentLoader] 已加载: {file_name}")
+                    logger.info("[DocumentLoader] 已加载: %s", file_name)
                 except Exception as e:
-                    print(f"[DocumentLoader] 加载失败 {file_name}: {e}")
+                    logger.warning("[DocumentLoader] 加载失败 %s: %s", file_name, e)
 
-        print(f"[DocumentLoader] 共加载 {len(all_documents)} 个文档")
+        logger.info("[DocumentLoader] 共加载 %d 个文档", len(all_documents))
         return all_documents
 
 
@@ -178,5 +205,5 @@ class DocumentChunker:
             切分后的节点列表
         """
         nodes = self._parser.get_nodes_from_documents(documents)
-        print(f"[DocumentChunker] {len(documents)} 个文档 → {len(nodes)} 个片段")
+        logger.info("[DocumentChunker] %d 个文档 → %d 个片段", len(documents), len(nodes))
         return nodes
