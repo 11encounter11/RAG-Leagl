@@ -139,6 +139,47 @@ class RAGService:
                 )
         return self._version_refs
 
+    def _document_meta(
+        self,
+        *,
+        original_filename: str,
+        kb_id: str,
+        document_id: str,
+        source_file: str,
+    ) -> Dict[str, Any]:
+        """组装**文档级**元数据，含真实的版本与时效（T-26）。
+
+        在这之前，chunk 里的 `validity_status` 恒为占位值 `effective` ——
+        后果是同一部法的两个版本（如劳动法 2009 / 2018）**都被标成"现行有效"**，
+        检索会把它们一起召回，而且看不出哪个是现行的（实测证据见 04-P1 T-25 完成记录）。
+
+        版本信息按**文件名**从语料清单取 —— 与 `_write_law_articles` 用的是同一份
+        索引，所以 chunk 元数据里的 `version_id` 与 `law_articles.version_id`
+        **必然一致**，不会出现"两边各说各话"。
+
+        `effective_date` 存成 ISO 字符串（`YYYY-MM-DD`）：Milvus 该字段声明为 VARCHAR，
+        而 ISO 格式恰好可以按字典序比较，范围过滤仍然成立。
+        """
+        meta: Dict[str, Any] = {
+            "kb_id": kb_id,
+            "document_id": document_id,
+            "source_file": source_file,
+            "filename": original_filename,
+        }
+        ref = self._version_index().get(original_filename)
+        if ref is not None:
+            meta.update(
+                {
+                    "version_id": ref.version_id,
+                    "version_label": ref.version_label,
+                    "validity_status": ref.validity_status,
+                    "effective_date": (
+                        ref.effective_date.isoformat() if ref.effective_date else None
+                    ),
+                }
+            )
+        return meta
+
     def _write_law_articles(self, result, original_filename: str) -> int:
         """把解析出的条文写进 `law_articles`（权威源）。返回写入条数。
 
@@ -222,12 +263,12 @@ class RAGService:
             return {"success": False, "message": "文件内容为空或无法解析"}
 
         document_id = str(uuid.uuid4())
-        meta: Dict[str, Any] = {
-            "kb_id": kb_id,
-            "document_id": document_id,
-            "source_file": str(path),
-            "filename": original_filename,
-        }
+        meta: Dict[str, Any] = self._document_meta(
+            original_filename=original_filename,
+            kb_id=kb_id,
+            document_id=document_id,
+            source_file=str(path),
+        )
         meta.update(doc_meta or {})
 
         result, type_source, route_detail = ingest_text(

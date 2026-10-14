@@ -285,3 +285,57 @@ def test_write_law_articles_with_unknown_file_uses_empty_version(monkeypatch):
 
     assert count == 1
     assert captured["rows"][0]["version_id"] == ""
+
+
+# ============================================================
+# chunk 元数据里的版本与时效（T-26）
+#
+# 在这之前 chunk 的 validity_status 恒为占位值 effective —— 后果是同一部法的
+# 两个版本**都被标成"现行有效"**，检索把两个版本一起召回且看不出哪个现行。
+# ============================================================
+def test_document_meta_carries_real_validity_for_amended_version():
+    from app.services import rag_service as mod
+
+    meta = mod.rag_service._document_meta(
+        original_filename="中华人民共和国劳动法_20090827.docx",
+        kb_id="default",
+        document_id="DOC-X",
+        source_file="x",
+    )
+
+    assert meta["validity_status"] == "amended", "2009 版必须是已修订，而不是占位值 effective"
+    assert meta["version_label"] == "2009年修正"
+    assert meta["effective_date"] == "2009-08-27"
+    assert meta["version_id"] == make_version_id(
+        "中华人民共和国劳动法", "2009年修正", "2009-08-27"
+    )
+
+
+def test_document_meta_marks_current_version_effective():
+    from app.services import rag_service as mod
+
+    meta = mod.rag_service._document_meta(
+        original_filename="中华人民共和国劳动法_20181229.docx",
+        kb_id="default",
+        document_id="DOC-Y",
+        source_file="x",
+    )
+    assert meta["validity_status"] == "effective"
+
+
+def test_document_meta_omits_version_for_unlisted_file():
+    """不在语料清单里的文件（用户临时上传）不该被硬安一个版本。
+
+    刻意**不写** validity_status 键 —— 让 `build_document_metadata` 的默认值生效，
+    避免这里和那边各写一个默认值（两处默认值迟早会不一致）。
+    """
+    from app.services import rag_service as mod
+
+    meta = mod.rag_service._document_meta(
+        original_filename="临时上传.txt",
+        kb_id="default",
+        document_id="DOC-Z",
+        source_file="x",
+    )
+    assert "version_id" not in meta
+    assert "validity_status" not in meta
