@@ -32,7 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.eval import (  # noqa: E402
     aggregate,
-    grade_of,
+    build_corpus_index,
+    DEFAULT_DATASET,
+    grade_hit,
+    list_laws,
     load_dataset,
     ndcg_at_k,
     precision_at_k,
@@ -42,47 +45,49 @@ from app.core.eval import (  # noqa: E402
     validate_dataset,
 )
 from app.core.eval.metrics import full_recall_at_k  # noqa: E402
-from app.core.ingest import ingest_text  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 
 REPORT_DIR = Path("data/eval/reports")
 CORPUS_DIR = Path("data/raw")
 
 
-def collect_corpus_article_nos() -> set:
-    """把语料跑一遍解析, 收集实际存在的条文号。
+def _short_ref(law_name: str | None, article_no: str | None) -> str:
+    """把"法名 + 条文号"缩成便于在报告里读的一小段。
 
-    刻意复用生产同一条 ingest 链路 —— 如果这里用另一套正则去数条文,
-    就变成了"用一个可能同样有问题的实现去验证另一个实现"。
+    只打印条文号是不够的 —— 语料含多部法后, 光看"第三十六条"无法判断
+    命中的到底是哪一部法, 而复盘失败样本时这恰恰是最关键的信息。
     """
-    article_nos: set = set()
-    if not CORPUS_DIR.exists():
-        return article_nos
-    for path in sorted(CORPUS_DIR.iterdir()):
-        if path.suffix.lower() not in {".txt", ".md"}:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for doc_type in (None, "statute"):
-            result, _, _ = ingest_text(text, filename=path.name, user_hint=doc_type)
-            if result.sections:
-                for section in result.sections:
-                    if section.article_no:
-                        article_nos.add(section.article_no)
-                break
-    return article_nos
+    if not article_no:
+        return "(无条文号)"
+    if not law_name:
+        return article_no
+    short = law_name.replace("中华人民共和国", "")
+    return f"{short}·{article_no}"
 
 
-def run_check() -> int:
+def run_check(dataset: str = str(DEFAULT_DATASET)) -> int:
     """评测集自检。"""
     print("=" * 68)
     print("评测集自检")
     print("=" * 68)
 
-    cases = load_dataset()
-    corpus_article_nos = collect_corpus_article_nos()
-    print(f"语料中的条文号: {len(corpus_article_nos)} 条  (来自 {CORPUS_DIR})")
+    # 必须用传入的路径 —— 原先这里写死 load_dataset(), 于是 --dataset 被静默忽略:
+    # 指定了别的数据集(例如故意造错的自检样例), 实际检查的却是默认那份, 照样打印"通过"。
+    cases = load_dataset(dataset)
+    print(f"数据集: {dataset}")
+    # 按"部"统计, 而不是把所有条文号混成一个集合 —— 混在一起的话,
+    # 多部法共享同一批条文号, 标注错误会被并集掩盖(曾经就是这样)。
+    corpus_index = build_corpus_index(CORPUS_DIR)
+    total_articles = sum(len(v) for v in corpus_index.values())
+    print(f"语料: {len(corpus_index)} 部法 / {total_articles} 个条文号  (来自 {CORPUS_DIR})")
+    for law in list_laws(corpus_index):
+        print(f"    《{law}》 {len(corpus_index[law])} 条")
 
-    outcome = validate_dataset(cases, corpus_article_nos or None)
+    if not corpus_index:
+        print("[错误] 语料索引为空 —— 自检无法进行(检查 data/raw 下是否真的有语料)")
+        return 1
+
+    outcome = validate_dataset(cases, corpus_index)
     stats = outcome["stats"]
 
     print(f"评测样本: {stats.get('total', 0)} 条")
@@ -102,7 +107,7 @@ def run_check() -> int:
     return 0
 
 
-async def run_eval(top_k: int, mode: str) -> int:
+async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -> int:
     """执行检索评测。"""
     from app.services.rag_service import rag_service
 
@@ -119,7 +124,7 @@ async def run_eval(top_k: int, mode: str) -> int:
         f"BM25语料={rag_service._retriever.bm25_size} 条"
     )
 
-    cases = load_dataset()
+    cases = load_dataset(dataset)
     per_question = []
 
     for case in cases:
@@ -131,12 +136,20 @@ async def run_eval(top_k: int, mode: str) -> int:
             nodes, _ = rag_service.retrieve(case.question, top_k, None)
             refused = not nodes
 
+        # 带上法名分档: 语料含多部法, 只比条文号会把另一部法的同名条文判成命中
         grades = [
-            grade_of((node.node.metadata or {}).get("article_no", ""), case.required, case.acceptable)
+            grade_hit(
+                (node.node.metadata or {}).get("article_no", ""),
+                case.required,
+                case.acceptable,
+                hit_law=(node.node.metadata or {}).get("law_name") or None,
+                expected_laws=case.laws,
+            )
             for node in nodes
         ]
         top_article_nos = [
-            (node.node.metadata or {}).get("article_no", "") for node in nodes[:top_k]
+            _short_ref((node.node.metadata or {}).get("law_name"), (node.node.metadata or {}).get("article_no"))
+            for node in nodes[:top_k]
         ]
 
         per_question.append(
@@ -209,7 +222,7 @@ async def run_eval(top_k: int, mode: str) -> int:
     return 0
 
 
-async def run_gate_eval() -> int:
+async def run_gate_eval(dataset: str = str(DEFAULT_DATASET)) -> int:
     """只评测拒答闸门 —— 不重排、不调 LLM, 因此便宜且可反复跑。
 
     与 direct/agentic 模式分开统计的理由:
@@ -230,7 +243,7 @@ async def run_gate_eval() -> int:
     )
 
     retriever = rag_service._retriever
-    cases = load_dataset()
+    cases = load_dataset(dataset)
 
     print("=" * 68)
     print("拒答闸门评测 (判据: 向量最高原始相似度, 不含重排/LLM)")
@@ -321,10 +334,10 @@ def main() -> int:
         REPORT_DIR = Path(args.dataset).parent / "reports"
 
     if args.check:
-        return run_check()
+        return run_check(args.dataset)
     if args.mode == "gate":
-        return asyncio.run(run_gate_eval())
-    return asyncio.run(run_eval(args.top_k, args.mode))
+        return asyncio.run(run_gate_eval(args.dataset))
+    return asyncio.run(run_eval(args.top_k, args.mode, args.dataset))
 
 
 if __name__ == "__main__":

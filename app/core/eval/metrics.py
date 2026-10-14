@@ -26,6 +26,32 @@ def grade_of(article_no: str, required: Sequence[str], acceptable: Sequence[str]
     return 0
 
 
+def grade_hit(
+    article_no: str,
+    required: Sequence[str],
+    acceptable: Sequence[str],
+    *,
+    hit_law: str | None = None,
+    expected_laws: Sequence[str] | None = None,
+) -> int:
+    """带法名的分档 —— 语料里有多部法时**必须**用它, 而不是 grade_of。
+
+    为什么需要: 每部法都有自己的"第三十六条"。语料只有一部法时, 单看条文号
+    没有歧义; 一旦语料里有《劳动法》和《劳动合同法》, 一条"第三十六条"既可能是
+    劳动法的工时上限, 也可能是劳动合同法的协商解除。只按条文号匹配会把
+    **另一部法的同名条文**判成命中, 指标虚高且不报错。
+
+    规则:
+        - `expected_laws` 为空 -> 退回纯条文号匹配(兼容未标注法名的样本)
+        - `expected_laws` 非空 -> 命中片段的法名必须落在其中, 否则判 0
+          (片段没有法名也算不匹配 —— 元数据缺失不该被当成命中)
+    """
+    if expected_laws:
+        if not hit_law or hit_law not in expected_laws:
+            return 0
+    return grade_of(article_no, required, acceptable)
+
+
 def dcg(gains: Iterable[float]) -> float:
     """折损累计增益。位置 i(从 0 开始)的折损系数是 log2(i + 2)。"""
     return sum(gain / math.log2(index + 2) for index, gain in enumerate(gains))

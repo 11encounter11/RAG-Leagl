@@ -1,40 +1,52 @@
-{"id":"L01","question":"劳动法规定每天最多工作几个小时？","kind":"term","answerable":true,"required":["第三十六条"],"acceptable":["第三十七条","第四十一条"],"notes":"日工时上限，第三十六条同时给出周工时"}
-{"id":"L02","question":"每周至少要安排几天休息？","kind":"colloquial","answerable":true,"required":["第三十八条"],"acceptable":[],"notes":"口语化问法，法条表述是'每周至少休息一日'"}
-{"id":"L03","question":"试用期最长可以约定多久？","kind":"term","answerable":true,"required":["第二十一条"],"acceptable":[],"notes":"六个月上限"}
-{"id":"L04","question":"我试用期还没过就被辞退了，试用期内被辞退有经济补偿吗？","kind":"colloquial","answerable":true,"required":["第二十五条"],"acceptable":["第二十八条","第三十二条"],"notes":"关键在于'被证明不符合录用条件'才可解除，补偿见第二十八条"}
-{"id":"L05","question":"什么情况下公司可以不用提前通知就直接开除员工？","kind":"colloquial","answerable":true,"required":["第二十五条"],"acceptable":[],"notes":"即时解除的四种情形"}
-{"id":"L06","question":"公司解除劳动合同需要提前三十天书面通知的情形有哪些？","kind":"term","answerable":true,"required":["第二十六条"],"acceptable":[],"notes":"预告解除"}
-{"id":"L07","question":"公司快破产了要裁员，法律上有什么程序要求？","kind":"compound","answerable":true,"required":["第二十七条"],"acceptable":["第二十八条"],"notes":"经济性裁员，含提前三十日向工会或全体职工说明情况"}
-{"id":"L08","question":"女员工在孕期是不是不能被辞退？","kind":"colloquial","answerable":true,"required":["第二十九条"],"acceptable":["第二十六条","第六十一条"],"notes":"阻却解除条款，同时涉及孕期劳动保护"}
-{"id":"L09","question":"我自己想辞职，需要提前多久跟公司说？","kind":"colloquial","answerable":true,"required":["第三十一条"],"acceptable":[],"notes":"劳动者预告解除，三十日"}
-{"id":"L10","question":"哪些情况下我可以立刻走人，不用提前通知公司？","kind":"colloquial","answerable":true,"required":["第三十二条"],"acceptable":[],"notes":"随时通知解除"}
-{"id":"L11","question":"劳动合同解除或终止后，经济补偿应该怎么给？","kind":"term","answerable":true,"required":["第二十八条"],"acceptable":["第二十四条","第二十六条","第二十七条"],"notes":"经济补偿的适用条件"}
-{"id":"L12","question":"公司已经三个月没发工资了，这样合法吗？","kind":"colloquial","answerable":true,"required":["第五十条"],"acceptable":["第九十一条"],"notes":"不得克扣或无故拖欠工资"}
-{"id":"L13","question":"最低工资标准是谁来定的？","kind":"term","answerable":true,"required":["第四十八条"],"acceptable":["第四十九条"],"notes":"省、自治区、直辖市人民政府规定并报国务院备案"}
-{"id":"L14","question":"工资分配是不是要同工同酬？","kind":"colloquial","answerable":true,"required":["第四十六条"],"acceptable":[],"notes":"按劳分配、同工同酬"}
-{"id":"L15","question":"法定节假日加班，加班费怎么算？","kind":"term","answerable":true,"required":["第四十四条"],"acceptable":[],"notes":"延长工时/休息日/法定休假日三档标准"}
-{"id":"L16","question":"工作满多久可以享受带薪年休假？","kind":"term","answerable":true,"required":["第四十五条"],"acceptable":[],"notes":"连续工作一年以上"}
-{"id":"L17","question":"产假最少有多少天？","kind":"term","answerable":true,"required":["第六十二条"],"acceptable":[],"notes":"不少于九十天"}
-{"id":"L18","question":"怀孕七个月以上还能被安排上夜班吗？","kind":"colloquial","answerable":true,"required":["第六十一条"],"acceptable":["第五十九条","第六十条"],"notes":"孕期禁忌劳动与夜班限制"}
-{"id":"L19","question":"公司招了一个十五岁的孩子来上班，违法吗？","kind":"colloquial","answerable":true,"required":["第十五条"],"acceptable":["第九十四条"],"notes":"禁止招用未满十六周岁未成年人；罚则见第九十四条"}
-{"id":"L20","question":"未成年工指的是哪个年龄段的人？","kind":"term","answerable":true,"required":["第五十八条"],"acceptable":[],"notes":"年满十六周岁未满十八周岁"}
-{"id":"L21","question":"公司一直不给我交社保，我该怎么办？","kind":"colloquial","answerable":true,"required":["第七十二条"],"acceptable":["第一百条"],"notes":"单位与劳动者必须依法参保缴费；不缴的罚则见第一百条"}
-{"id":"L22","question":"和公司发生劳动争议，有哪些解决途径？","kind":"term","answerable":true,"required":["第七十七条"],"acceptable":["第七十九条"],"notes":"调解、仲裁、诉讼，也可协商"}
-{"id":"L23","question":"申请劳动仲裁有没有时间限制？","kind":"term","answerable":true,"required":["第八十二条"],"acceptable":[],"notes":"六十日内提出书面申请"}
-{"id":"L24","question":"仲裁结果我不服，接下来还能怎么办？","kind":"colloquial","answerable":true,"required":["第八十三条"],"acceptable":["第七十七条"],"notes":"十五日内向法院起诉"}
-{"id":"L25","question":"劳动合同一定要签书面的吗？","kind":"term","answerable":true,"required":["第十九条"],"acceptable":["第十六条"],"notes":"应当以书面形式订立；建立劳动关系应当订立劳动合同见第十六条"}
-{"id":"L26","question":"什么样的劳动合同是无效的？","kind":"term","answerable":true,"required":["第十八条"],"acceptable":["第九十七条"],"notes":"违反法律法规、欺诈威胁订立"}
-{"id":"L27","question":"在同一个单位连续工作满十年，能要求签无固定期限合同吗？","kind":"term","answerable":true,"required":["第二十条"],"acceptable":[],"notes":"连续工作满十年以上，双方同意续延的可订无固定期限合同"}
-{"id":"L28","question":"受了工伤能享受哪些待遇？","kind":"term","answerable":true,"required":["第七十三条"],"acceptable":["第七十条"],"notes":"因工伤残或患职业病属法定社会保险待遇情形"}
-{"id":"L29","question":"工作时间以外被安排干活又不给钱，老板这样合法吗？","kind":"compound","answerable":true,"required":["第四十一条"],"acceptable":["第四十三条","第四十四条","第九十条"],"notes":"复合问法：既问加班上限也问加班报酬"}
-{"id":"L30","question":"工会能替我向公司讨说法吗？","kind":"colloquial","answerable":true,"required":["第八十八条"],"acceptable":["第三十条","第七条"],"notes":"工会监督权与提出意见权"}
-{"id":"L31","question":"劳动法第四十七条讲了什么？","kind":"term","answerable":true,"required":["第四十七条"],"acceptable":[],"notes":"条文编号直查，考的是精确定位而非语义相似"}
-{"id":"L32","question":"国家实行劳动者每日工作时间不超过八小时","kind":"term","answerable":true,"required":["第三十六条"],"acceptable":[],"notes":"原句直查，与 L01 同条不同问法，用于观察改写是否带来增益"}
-{"id":"L33","question":"用人单位强令劳动者违章冒险作业导致重大伤亡事故，要负什么责任？","kind":"term","answerable":true,"required":["第九十三条"],"acceptable":["第五十六条"],"notes":"刑责条款；第五十六条是劳动者拒绝权"}
-{"id":"L34","question":"哺乳期没满一周岁的婴儿，公司能安排我加班吗？","kind":"colloquial","answerable":true,"required":["第六十三条"],"acceptable":["第六十一条"],"notes":"哺乳期禁忌劳动"}
-{"id":"L35","question":"商标注册申请被驳回后可以怎么救济？","kind":"out_of_scope","answerable":false,"required":[],"acceptable":[],"notes":"超出劳动法范围，正确行为是拒答/说明未找到依据"}
-{"id":"L36","question":"离婚时夫妻共同财产怎么分割？","kind":"out_of_scope","answerable":false,"required":[],"acceptable":[],"notes":"属民法典婚姻家庭编，不应从劳动法语料里编造答案"}
-{"id":"L37","question":"房屋租赁合同里约定的违约金过高，可以要求调整吗？","kind":"out_of_scope","answerable":false,"required":[],"acceptable":[],"notes":"属民法典合同编"}
-{"id":"L38","question":"有限责任公司股东的出资认缴期限最长可以多久？","kind":"out_of_scope","answerable":false,"required":[],"acceptable":[],"notes":"属公司法"}
-{"id":"L39","question":"这份劳动合同是2015年签的，现在还有效吗？条款有没有被修订过？","kind":"validity","answerable":true,"required":["第十六条"],"acceptable":["第十七条"],"notes":"P1 目标项：P0 语料无版本/时效元数据，无法回答'是否已被修订'，预期不达标"}
-{"id":"L40","question":"浙江省对于这条规定有没有地方性的实施办法？","kind":"validity","answerable":true,"required":["第一百零六条"],"acceptable":[],"notes":"P1 目标项：P0 无地域分层知识库，预期不达标"}
+{"id": "L01", "question": "劳动法规定每天最多工作几个小时？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十六条"], "acceptable": ["第三十七条", "第四十一条"], "notes": "日工时上限，第三十六条同时给出周工时"}
+{"id": "L02", "question": "每周至少要安排几天休息？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十八条"], "acceptable": [], "notes": "口语化问法，法条表述是'每周至少休息一日'"}
+{"id": "L03", "question": "试用期最长可以约定多久？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十一条"], "acceptable": [], "notes": "六个月上限"}
+{"id": "L04", "question": "我试用期还没过就被辞退了，试用期内被辞退有经济补偿吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十五条"], "acceptable": ["第二十八条", "第三十二条"], "notes": "关键在于'被证明不符合录用条件'才可解除，补偿见第二十八条"}
+{"id": "L05", "question": "什么情况下公司可以不用提前通知就直接开除员工？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十五条"], "acceptable": [], "notes": "即时解除的四种情形"}
+{"id": "L06", "question": "公司解除劳动合同需要提前三十天书面通知的情形有哪些？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十六条"], "acceptable": [], "notes": "预告解除"}
+{"id": "L07", "question": "公司快破产了要裁员，法律上有什么程序要求？", "kind": "compound", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十七条"], "acceptable": ["第二十八条"], "notes": "经济性裁员，含提前三十日向工会或全体职工说明情况"}
+{"id": "L08", "question": "女员工在孕期是不是不能被辞退？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十九条"], "acceptable": ["第二十六条", "第六十一条"], "notes": "阻却解除条款，同时涉及孕期劳动保护"}
+{"id": "L09", "question": "我自己想辞职，需要提前多久跟公司说？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十一条"], "acceptable": [], "notes": "劳动者预告解除，三十日"}
+{"id": "L10", "question": "哪些情况下我可以立刻走人，不用提前通知公司？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十二条"], "acceptable": [], "notes": "随时通知解除"}
+{"id": "L11", "question": "劳动合同解除或终止后，经济补偿应该怎么给？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十八条"], "acceptable": ["第二十四条", "第二十六条", "第二十七条"], "notes": "经济补偿的适用条件"}
+{"id": "L12", "question": "公司已经三个月没发工资了，这样合法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第五十条"], "acceptable": ["第九十一条"], "notes": "不得克扣或无故拖欠工资"}
+{"id": "L13", "question": "最低工资标准是谁来定的？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十八条"], "acceptable": ["第四十九条"], "notes": "省、自治区、直辖市人民政府规定并报国务院备案"}
+{"id": "L14", "question": "工资分配是不是要同工同酬？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十六条"], "acceptable": [], "notes": "按劳分配、同工同酬"}
+{"id": "L15", "question": "法定节假日加班，加班费怎么算？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十四条"], "acceptable": [], "notes": "延长工时/休息日/法定休假日三档标准"}
+{"id": "L16", "question": "工作满多久可以享受带薪年休假？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十五条"], "acceptable": [], "notes": "连续工作一年以上"}
+{"id": "L17", "question": "产假最少有多少天？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第六十二条"], "acceptable": [], "notes": "不少于九十天"}
+{"id": "L18", "question": "怀孕七个月以上还能被安排上夜班吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第六十一条"], "acceptable": ["第五十九条", "第六十条"], "notes": "孕期禁忌劳动与夜班限制"}
+{"id": "L19", "question": "公司招了一个十五岁的孩子来上班，违法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十五条"], "acceptable": ["第九十四条"], "notes": "禁止招用未满十六周岁未成年人；罚则见第九十四条"}
+{"id": "L20", "question": "未成年工指的是哪个年龄段的人？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第五十八条"], "acceptable": [], "notes": "年满十六周岁未满十八周岁"}
+{"id": "L21", "question": "公司一直不给我交社保，我该怎么办？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十二条"], "acceptable": ["第一百条"], "notes": "单位与劳动者必须依法参保缴费；不缴的罚则见第一百条"}
+{"id": "L22", "question": "和公司发生劳动争议，有哪些解决途径？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十七条"], "acceptable": ["第七十九条"], "notes": "调解、仲裁、诉讼，也可协商"}
+{"id": "L23", "question": "申请劳动仲裁有没有时间限制？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十二条"], "acceptable": [], "notes": "六十日内提出书面申请"}
+{"id": "L24", "question": "仲裁结果我不服，接下来还能怎么办？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十三条"], "acceptable": ["第七十七条"], "notes": "十五日内向法院起诉"}
+{"id": "L25", "question": "劳动合同一定要签书面的吗？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十九条"], "acceptable": ["第十六条"], "notes": "应当以书面形式订立；建立劳动关系应当订立劳动合同见第十六条"}
+{"id": "L26", "question": "什么样的劳动合同是无效的？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十八条"], "acceptable": ["第九十七条"], "notes": "违反法律法规、欺诈威胁订立"}
+{"id": "L27", "question": "在同一个单位连续工作满十年，能要求签无固定期限合同吗？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十条"], "acceptable": [], "notes": "连续工作满十年以上，双方同意续延的可订无固定期限合同"}
+{"id": "L28", "question": "受了工伤能享受哪些待遇？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十三条"], "acceptable": ["第七十条"], "notes": "因工伤残或患职业病属法定社会保险待遇情形"}
+{"id": "L29", "question": "工作时间以外被安排干活又不给钱，老板这样合法吗？", "kind": "compound", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十一条"], "acceptable": ["第四十三条", "第四十四条", "第九十条"], "notes": "复合问法：既问加班上限也问加班报酬"}
+{"id": "L30", "question": "工会能替我向公司讨说法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十八条"], "acceptable": ["第三十条", "第七条"], "notes": "工会监督权与提出意见权"}
+{"id": "L31", "question": "劳动法第四十七条讲了什么？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十七条"], "acceptable": [], "notes": "条文编号直查，考的是精确定位而非语义相似"}
+{"id": "L32", "question": "国家实行劳动者每日工作时间不超过八小时", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十六条"], "acceptable": [], "notes": "原句直查，与 L01 同条不同问法，用于观察改写是否带来增益"}
+{"id": "L33", "question": "用人单位强令劳动者违章冒险作业导致重大伤亡事故，要负什么责任？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第九十三条"], "acceptable": ["第五十六条"], "notes": "刑责条款；第五十六条是劳动者拒绝权"}
+{"id": "L34", "question": "哺乳期没满一周岁的婴儿，公司能安排我加班吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第六十三条"], "acceptable": ["第六十一条"], "notes": "哺乳期禁忌劳动"}
+{"id": "L35", "question": "商标注册申请被驳回后可以怎么救济？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "超出劳动法范围，正确行为是拒答/说明未找到依据"}
+{"id": "L36", "question": "离婚时夫妻共同财产怎么分割？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属民法典婚姻家庭编，不应从劳动法语料里编造答案"}
+{"id": "L37", "question": "房屋租赁合同里约定的违约金过高，可以要求调整吗？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属民法典合同编"}
+{"id": "L38", "question": "有限责任公司股东的出资认缴期限最长可以多久？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属公司法"}
+{"id": "L39", "question": "这份劳动合同是2015年签的，现在还有效吗？条款有没有被修订过？", "kind": "validity", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十六条"], "acceptable": ["第十七条"], "notes": "P1 目标项：P0 语料无版本/时效元数据，无法回答'是否已被修订'，预期不达标"}
+{"id": "L40", "question": "浙江省对于这条规定有没有地方性的实施办法？", "kind": "validity", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第一百零六条"], "acceptable": [], "notes": "P1 目标项：P0 无地域分层知识库，预期不达标"}
+{"id": "L41", "question": "我的外观设计专利被别的公司仿冒了，可以要求多少赔偿？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属专利法，与劳动法语料无关"}
+{"id": "L42", "question": "别人未经授权使用了我写的软件代码，著作权侵权怎么举证？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属著作权法"}
+{"id": "L43", "question": "两辆私家车相撞，对方全责，人身损害赔偿包括哪些项目？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属道路交通安全法/民法典侵权责任编，与工伤无关"}
+{"id": "L44", "question": "医院误诊导致病情加重，医疗事故鉴定该找哪个部门？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属医疗损害责任相关法规"}
+{"id": "L45", "question": "父母去世后没有留遗嘱，遗产按照什么顺序继承？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属民法典继承编"}
+{"id": "L46", "question": "朋友之间借钱，约定的利率最高不能超过多少才受法律保护？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属民间借贷相关司法解释，与劳动法无关"}
+{"id": "L47", "question": "网购的东西不满意，七天无理由退货的适用范围是什么？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属消费者权益保护法"}
+{"id": "L48", "question": "对市场监督管理局的罚款决定不服，应该在多久之内提起行政诉讼？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属行政诉讼法，与劳动法第十一章的劳动行政监督检查不是同一件事"}
+{"id": "L49", "question": "盗窃罪数额较大的量刑标准是什么？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属刑法，劳动法第十二章提到的刑事责任仅限特定情形，不涵盖一般盗窃罪"}
+{"id": "L50", "question": "有限公司股东之间转让股权需要其他股东同意吗？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属公司法"}
+{"id": "L51", "question": "小区业主委员会有没有权利更换物业公司？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属物业管理条例/民法典物权编"}
+{"id": "L52", "question": "工厂排污导致下游鱼塘受损，环境侵权适用什么归责原则？", "kind": "out_of_scope", "answerable": false, "required": [], "acceptable": [], "notes": "属环境保护法/民法典侵权责任编"}

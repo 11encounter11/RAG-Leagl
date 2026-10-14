@@ -17,6 +17,7 @@ from app.core.eval.metrics import (
     dcg,
     full_recall_at_k,
     grade_of,
+    grade_hit,
     ndcg_at_k,
     precision_at_k,
     recall_at_k,
@@ -39,6 +40,44 @@ def test_grade_of_three_levels():
 def test_grade_required_takes_precedence():
     """同一条既是必需又是可接受时, 应按必需算, 不能降档。"""
     assert grade_of("第四十七条", ["第四十七条"], ["第四十七条"]) == 2
+
+
+# ============================================================
+# 法名维度(语料含多部法后必须按法名匹配)
+# ============================================================
+LABOR = "中华人民共和国劳动法"
+CONTRACT = "中华人民共和国劳动合同法"
+
+
+def test_grade_hit_matches_same_law():
+    grade = grade_hit("第三十六条", ["第三十六条"], [], hit_law=LABOR, expected_laws=[LABOR])
+    assert grade == 2
+
+
+def test_grade_hit_rejects_same_article_in_another_law():
+    """本测试是整个法名维度的存在理由。
+
+    《劳动法》第三十六条是工时上限, 《劳动合同法》第三十六条是协商解除 ——
+    条文号相同、法不同, 绝不能被判成命中。
+    """
+    grade = grade_hit("第三十六条", ["第三十六条"], [], hit_law=CONTRACT, expected_laws=[LABOR])
+    assert grade == 0
+
+
+def test_grade_hit_treats_missing_law_metadata_as_miss():
+    """片段没有法名时不能默认放行 —— 元数据丢失不该算命中。"""
+    assert grade_hit("第三十六条", ["第三十六条"], [], hit_law=None, expected_laws=[LABOR]) == 0
+
+
+def test_grade_hit_accepts_any_of_expected_laws():
+    """一个问题的答案可能来自多部法(如社保题), 任一部命中都算对。"""
+    grade = grade_hit("第七十二条", ["第七十二条"], [], hit_law=LABOR, expected_laws=[LABOR, CONTRACT])
+    assert grade == 2
+
+
+def test_grade_hit_falls_back_without_expected_laws():
+    """未标注法名的样本退回纯条文号匹配(兼容过渡期)。"""
+    assert grade_hit("第三十六条", ["第三十六条"], [], hit_law=CONTRACT, expected_laws=[]) == 2
 
 
 # ============================================================
@@ -175,6 +214,16 @@ def test_real_dataset_loads_and_is_valid():
     assert outcome["stats"]["unresolvable"] >= 3, "必须有超纲题来验证拒答行为"
 
 
+def test_real_dataset_marks_law_on_every_answerable_case():
+    """语料含多部法后, 可回答样本没有 law 就会跨法误判 —— 必须是硬性要求。"""
+    cases = load_dataset("data/eval/legal_qa_eval.jsonl")
+    missing = [c.id for c in cases if c.answerable and not c.laws]
+    assert missing == [], f"这些样本缺 law: {missing}"
+    # 超纲题的正确答案是拒答, 不该有 law
+    stray = [c.id for c in cases if not c.answerable and c.laws]
+    assert stray == [], f"超纲题不该标注 law: {stray}"
+
+
 def test_dataset_covers_multiple_question_kinds():
     """只测一类问法的评测集测不出真实差距。"""
     cases = load_dataset("data/eval/legal_qa_eval.jsonl")
@@ -190,11 +239,58 @@ def test_validate_catches_ground_truth_not_in_corpus():
             question="测试问题",
             kind="term",
             answerable=True,
+            laws=[LABOR],
             required=["第九百九十九条"],
         )
     ]
-    outcome = validate_dataset(cases, corpus_article_nos={"第一条", "第二条"})
+    outcome = validate_dataset(cases, corpus_index={LABOR: {"第一条", "第二条"}})
     assert any("第九百九十九条" in error for error in outcome["errors"])
+
+
+def test_validate_catches_article_from_wrong_law():
+    """条文号写对了、却记错了它属于哪部法 —— 同样必须拦下。"""
+    cases = [
+        EvalCase(
+            id="X3",
+            question="测试问题",
+            kind="term",
+            answerable=True,
+            laws=[LABOR],
+            required=["第三十六条"],
+        )
+    ]
+    # 第三十六条只在劳动合同法里存在(模拟标注记错法名的情况)
+    outcome = validate_dataset(cases, corpus_index={LABOR: {"第一条"}, CONTRACT: {"第三十六条"}})
+    assert any("《中华人民共和国劳动法》里没有 第三十六条" in e for e in outcome["errors"])
+
+
+def test_validate_catches_unknown_law_name():
+    cases = [
+        EvalCase(
+            id="X4",
+            question="测试问题",
+            kind="term",
+            answerable=True,
+            laws=["中华人民共和国不存在的法"],
+            required=["第一条"],
+        )
+    ]
+    outcome = validate_dataset(cases, corpus_index={LABOR: {"第一条"}})
+    assert any("不在语料中" in error for error in outcome["errors"])
+
+
+def test_validate_requires_law_on_answerable_case():
+    cases = [EvalCase(id="X5", question="q", kind="term", answerable=True, required=["第一条"])]
+    outcome = validate_dataset(cases, corpus_index={LABOR: {"第一条"}})
+    assert any("没标注 law" in error for error in outcome["errors"])
+
+
+def test_validate_rejects_law_on_out_of_scope_case():
+    cases = [
+        EvalCase(id="X6", question="q", kind="out_of_scope", answerable=False, laws=[LABOR])
+    ]
+    outcome = validate_dataset(cases)
+    assert any("超纲" in error for error in outcome["errors"])
 
 
 def test_validate_catches_answerable_without_ground_truth():
