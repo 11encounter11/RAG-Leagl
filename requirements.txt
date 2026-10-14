@@ -17,6 +17,14 @@ langchain-core>=0.3.0
 # Retrieval Enhancement
 rank-bm25>=0.2.2
 sentence-transformers>=2.7.0
+# 中文分词。BM25 那一路靠它 —— 注意 retriever.py 里 jieba 缺失时会**静默降级**
+# 成字符 bigram（不报错、只是质量变差），所以它必须显式声明（2026-10-14 补）。
+jieba>=0.42.1
+# 向量打分与排序（retriever.py 直接用 np.argsort）
+numpy>=1.24
+# 重排器加载精度（retriever.py 里按 dtype 分支直接 import）。
+# sentence-transformers 会带 torch，但代码直接 import 了它，就该自己声明。
+torch>=2.0
 
 # LLM API Clients
 openai>=1.40.0
@@ -42,5 +50,14 @@ openpyxl>=3.1.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 python-dotenv>=1.0.0
+# streamlit_app.py 调后端接口、scripts/e2e_acceptance.py 亦然
+requests>=2.31
+# scripts/probe_reranker.py 量内存占用（开发工具，但脚本会 import）
+psutil>=5.9
 # 注: 未引入 sse-starlette —— SSE 输出在 app/utils/sse.py 里只有一行格式化,
 # 没必要为此多一个依赖(2026-10-14 清理)。
+
+# Test
+# 145 条测试全依赖它。之前一直漏声明（本机 Anaconda 自带 pytest，所以永不报错），
+# 换台机器按 requirements 装完就 `pytest: command not found`（2026-10-14 补）。
+pytest>=7.4
