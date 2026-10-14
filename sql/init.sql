@@ -55,3 +55,46 @@ CREATE TABLE IF NOT EXISTS documents (
     INDEX idx_kb (kb_id),
     INDEX idx_content_hash (content_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文档表';
+
+-- 法规版本表（P1）
+-- 与 app/core/memory/db_store.py 的 LawVersion 模型必须保持一致。
+-- 同一部法的多个版本靠 law_name 归组；validity_status 决定检索时是否召回该版本。
+--
+-- 索引名刻意与 SQLAlchemy 自动生成的一致（ix_<表>_<列>），
+-- 否则"用 init.sql 初始化的库"与"用 create_all 建的库"索引名会不同，
+-- 以后写迁移脚本时容易对不上。
+CREATE TABLE IF NOT EXISTS law_versions (
+    id VARCHAR(64) PRIMARY KEY COMMENT '版本ID',
+    document_id VARCHAR(64) NOT NULL COMMENT '来源文档ID（→documents.id）',
+    law_name VARCHAR(200) NOT NULL COMMENT '法名，同一部法的多个版本靠它归组',
+    law_level ENUM('宪法','法律','行政法规','地方性法规','司法解释','部门规章','其他')
+        DEFAULT NULL COMMENT '法律层级',
+    issuing_body VARCHAR(200) DEFAULT NULL COMMENT '制定机关',
+    doc_no VARCHAR(100) DEFAULT NULL COMMENT '发文字号',
+    version_label VARCHAR(100) DEFAULT NULL COMMENT '版本标签，如 2007年通过 / 2012年修正',
+    publish_date DATE DEFAULT NULL COMMENT '公布日期',
+    effective_date DATE DEFAULT NULL COMMENT '施行日期（判断历史法条适用哪一版看它）',
+    expiry_date DATE DEFAULT NULL COMMENT '失效日期（NULL = 现行有效）',
+    validity_status ENUM('effective','amended','repealed','pending')
+        NOT NULL DEFAULT 'effective' COMMENT '时效状态',
+    superseded_by VARCHAR(64) DEFAULT NULL COMMENT '被哪个版本取代（→law_versions.id）',
+    source_url VARCHAR(500) DEFAULT NULL COMMENT '来源链接',
+    INDEX ix_law_versions_document_id (document_id),
+    INDEX ix_law_versions_law_name (law_name),
+    INDEX ix_law_versions_validity_status (validity_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='法规版本表';
+
+-- 条文表（P1）—— **权威源（ground truth）**
+-- 与 app/core/memory/db_store.py 的 LawArticle 模型必须保持一致。
+-- 向量库里的 chunk 是它的检索索引，不是权威副本：引用白名单校验查本表。
+CREATE TABLE IF NOT EXISTS law_articles (
+    id VARCHAR(64) PRIMARY KEY COMMENT '条文ID',
+    version_id VARCHAR(64) NOT NULL COMMENT '所属版本（→law_versions.id）',
+    article_no VARCHAR(50) NOT NULL COMMENT '条文号，如 第四十七条',
+    article_no_norm INT DEFAULT NULL COMMENT '归一化条文号，如 47（用于排序/匹配）',
+    chapter_path VARCHAR(500) DEFAULT NULL COMMENT '章节路径',
+    seq INT DEFAULT NULL COMMENT '在版本内的顺序号',
+    content TEXT NOT NULL COMMENT '条文原文',
+    INDEX ix_law_articles_version_id (version_id),
+    INDEX idx_version_article (version_id, article_no_norm)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='条文表（权威源）';

@@ -6,7 +6,20 @@ import uuid
 import logging
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, String, Text, Integer, DateTime, JSON, ForeignKey, func
+from sqlalchemy import (
+    create_engine,
+    Column,
+    String,
+    Text,
+    Integer,
+    DateTime,
+    Date,
+    Enum,
+    Index,
+    JSON,
+    ForeignKey,
+    func,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -79,6 +92,85 @@ class Document(Base):
 
     created_at = Column(DateTime, default=func.now(), comment="上传时间")
     processed_at = Column(DateTime, nullable=True, comment="处理完成时间")
+
+
+# ===== 法规版本与条文（P1）=====
+#
+# 这两张表把"版本与时效"从**文档里的概念**变成**数据库里的数据**。
+#
+# 为什么要它们（见 docs/11-文档处理管线.md §五、docs/09-当前状态对账.md §六）：
+#   建表之前，条文的原文与元数据**只存在向量库里** —— 向量库本该是"可重建的
+#   派生数据"，却兼任了"原文唯一副本"。结果两件事都做不好：
+#     - Milvus 数据丢了，元数据（版本/时效）无从恢复
+#     - 引用白名单校验只能查 Milvus，而那里可能已被污染
+#   建完之后：MySQL 是权威源，Milvus 退回索引角色。
+#
+# 字段严格按 docs/02-设计文档.md §3.1，不加不减；要加字段属设计变更，须先改文档。
+
+
+class LawVersion(Base):
+    """法规版本表 —— 同一部法的多个版本靠 `law_name` 归组。
+
+    本项目的两条差异化能力都依赖它：
+      - **时效过滤**（需求 F4.2）：`validity_status` 决定检索时是否召回该版本
+      - **引用标注**（需求 F3.3）：`version_label` 让引用处能显示"2012年修正 · 现行有效"
+
+    `document_id` 指向 `documents.id`，即"这个版本来自哪份上传的文件"。
+    """
+    __tablename__ = "law_versions"
+
+    id = Column(String(64), primary_key=True, comment="版本ID")
+    document_id = Column(String(64), nullable=False, index=True, comment="来源文档ID（→documents.id）")
+    law_name = Column(String(200), nullable=False, index=True, comment="法名，同一部法的多个版本靠它归组")
+    law_level = Column(
+        Enum(
+            "宪法", "法律", "行政法规", "地方性法规", "司法解释", "部门规章", "其他",
+            name="law_level_enum",
+        ),
+        nullable=True,
+        comment="法律层级",
+    )
+    issuing_body = Column(String(200), nullable=True, comment="制定机关")
+    doc_no = Column(String(100), nullable=True, comment="发文字号")
+    version_label = Column(String(100), nullable=True, comment='版本标签，如 "2007年通过" / "2012年修正"')
+    publish_date = Column(Date, nullable=True, comment="公布日期")
+    effective_date = Column(Date, nullable=True, comment="施行日期（判断历史法条适用哪一版看它）")
+    expiry_date = Column(Date, nullable=True, comment="失效日期（NULL = 现行有效）")
+    validity_status = Column(
+        Enum("effective", "amended", "repealed", "pending", name="validity_status_enum"),
+        nullable=False,
+        default="effective",
+        index=True,
+        comment="时效状态：effective/amended/repealed/pending",
+    )
+    superseded_by = Column(String(64), nullable=True, comment="被哪个版本取代（→law_versions.id）")
+    source_url = Column(String(500), nullable=True, comment="来源链接")
+
+
+class LawArticle(Base):
+    """条文表 —— **权威源（ground truth）**。
+
+    向量库里的 chunk 是它的"检索索引"，不是权威副本：
+      - 引用白名单校验查**本表**（需求 F2.8）
+      - 换 embedding 模型/重建索引时，从本表重新生成，元数据不丢
+
+    注意语义：这是**条文**表，来源是解析结果（`ParsedSection`），不是"切分出的 chunk 列表"。
+    现阶段一条法条 = 一个 chunk，所以数量一致；将来非按条切分的文档（FAQ、降级文本）
+    不应写进本表。
+    """
+    __tablename__ = "law_articles"
+
+    id = Column(String(64), primary_key=True, comment="条文ID")
+    version_id = Column(String(64), nullable=False, index=True, comment="所属版本（→law_versions.id）")
+    article_no = Column(String(50), nullable=False, comment='条文号，如 "第四十七条"')
+    article_no_norm = Column(Integer, nullable=True, comment="归一化条文号，如 47（用于排序/匹配）")
+    chapter_path = Column(String(500), nullable=True, comment='章节路径，如 "第四章 劳动合同的解除和终止"')
+    seq = Column(Integer, nullable=True, comment="在版本内的顺序号")
+    content = Column(Text, nullable=False, comment="条文原文")
+
+    __table_args__ = (
+        Index("idx_version_article", "version_id", "article_no_norm"),
+    )
 
 
 # ===== 数据库管理器 =====
