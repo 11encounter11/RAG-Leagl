@@ -1,0 +1,124 @@
+{
+  "_comment": "语料清单(机器可读的单一事实来源)。人工说明见 docs/08-语料清单.md。这份数据同时是将来 law_versions 表的种子。",
+  "source": "https://flk.npc.gov.cn/",
+  "updated_at": "2026-10-14",
+  "defaults": {
+    "kb_id": "default",
+    "region_code": "",
+    "doc_type": "statute"
+  },
+  "files": [
+    {
+      "file": "中华人民共和国劳动法_20090827.docx",
+      "law_name": "中华人民共和国劳动法",
+      "law_level": "法律",
+      "version_label": "2009年修正",
+      "publish_date": "2009-08-27",
+      "effective_date": "2009-08-27",
+      "validity_status": "amended",
+      "version_group": "中华人民共和国劳动法",
+      "sha256": "0f8a45f1722a9441a3292ccdb7cd15c92b83da1e5953f2eddb365afba0ac6668",
+      "dates_verified": true
+    },
+    {
+      "file": "中华人民共和国劳动法_20181229.docx",
+      "law_name": "中华人民共和国劳动法",
+      "law_level": "法律",
+      "version_label": "2018年修正",
+      "publish_date": "2018-12-29",
+      "effective_date": "2018-12-29",
+      "validity_status": "effective",
+      "version_group": "中华人民共和国劳动法",
+      "sha256": "011cdbc0c80d1441e86340579a4f082c40eefb1b5dc204bc0127b3ef777b62a2",
+      "dates_verified": true
+    },
+    {
+      "file": "中华人民共和国劳动合同法_20121228.docx",
+      "law_name": "中华人民共和国劳动合同法",
+      "law_level": "法律",
+      "version_label": "2012年修正",
+      "publish_date": "2012-12-28",
+      "effective_date": "2013-07-01",
+      "validity_status": "effective",
+      "version_group": "中华人民共和国劳动合同法",
+      "sha256": "ede08615cfea42f23c6650c852cd5a3a7641bd176c12b2d34428cce5822938dc",
+      "dates_verified": false,
+      "dates_note": "公布日为修正决定日期; 施行日 2013-07-01 来自修正决定, 未在本地正文二次确认",
+      "missing_version_note": "缺 2007 年通过版, 因此本部法暂无版本对"
+    },
+    {
+      "file": "中华人民共和国社会保险法_20101028.docx",
+      "law_name": "中华人民共和国社会保险法",
+      "law_level": "法律",
+      "version_label": "2010年通过",
+      "publish_date": "2010-10-28",
+      "effective_date": "2011-07-01",
+      "validity_status": "amended",
+      "version_group": "中华人民共和国社会保险法",
+      "sha256": "fc7eb51456881e6c3bf785a308824b24fa61ac1786255c06db0883e2e1f5566e",
+      "dates_verified": true
+    },
+    {
+      "file": "中华人民共和国社会保险法_20181229.docx",
+      "law_name": "中华人民共和国社会保险法",
+      "law_level": "法律",
+      "version_label": "2018年修正",
+      "publish_date": "2018-12-29",
+      "effective_date": "2018-12-29",
+      "validity_status": "effective",
+      "version_group": "中华人民共和国社会保险法",
+      "sha256": "758586c484878df1c95cba89f5d4fae6dbdd897075505bd7cac3d06413d64098",
+      "dates_verified": true
+    },
+    {
+      "file": "中华人民共和国劳动争议调解仲裁法_20071229.docx",
+      "law_name": "中华人民共和国劳动争议调解仲裁法",
+      "law_level": "法律",
+      "version_label": "2007年通过",
+      "publish_date": "2007-12-29",
+      "effective_date": "2008-05-01",
+      "validity_status": "effective",
+      "version_group": "中华人民共和国劳动争议调解仲裁法",
+      "sha256": "9bc113c9324fd4ba1b0569b8545e8e3e7b8022554a54eb6029616f38c2ff495c",
+      "dates_verified": true
+    },
+    {
+      "file": "工伤保险条例_20101220.docx",
+      "law_name": "工伤保险条例",
+      "law_level": "行政法规",
+      "version_label": "2010年修订",
+      "publish_date": "2010-12-20",
+      "effective_date": "2011-01-01",
+      "validity_status": "effective",
+      "version_group": "工伤保险条例",
+      "sha256": "4c68623fbe60b6d86d50e793d8f3e48f9775d81b2121c3bf41c306bbbad83dad",
+      "dates_verified": false,
+      "dates_note": "修订决定日期见正文; 施行日 2011-01-01 未在本地正文二次确认"
+    },
+    {
+      "file": "职工带薪年休假条例_20071214.docx",
+      "law_name": "职工带薪年休假条例",
+      "law_level": "行政法规",
+      "version_label": "2007年公布",
+      "publish_date": "2007-12-14",
+      "effective_date": "2008-01-01",
+      "validity_status": "effective",
+      "version_group": "职工带薪年休假条例",
+      "sha256": "b57ba3fdd736a4bd22f19f3de8817c9e7dc3d6ac91e6a5ebfb3ed94720e533a7",
+      "dates_verified": true
+    },
+    {
+      "file": "保障农民工工资支付条例_20191230.docx",
+      "law_name": "保障农民工工资支付条例",
+      "law_level": "行政法规",
+      "version_label": "2019年公布",
+      "publish_date": "2019-12-30",
+      "effective_date": "2020-05-01",
+      "validity_status": "effective",
+      "version_group": "保障农民工工资支付条例",
+      "sha256": "5da91afed4cb468fd43c3d266574eab3e882c133198db1a1d1ebb9467538036b",
+      "dates_verified": false,
+      "dates_note": "该文件正文内无通过/公布/施行抬头, 日期取自下载页, 未经二次确认"
+    }
+  ]
+}
