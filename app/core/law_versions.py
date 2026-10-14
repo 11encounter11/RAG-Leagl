@@ -145,3 +145,83 @@ def build_version_rows(
             )
         )
     return rows, unmatched
+
+
+# ============================================================
+# 入库时用：文件名 -> 版本标识
+# ============================================================
+@dataclass(frozen=True)
+class VersionRef:
+    """入库时需要的最小版本信息（**不含 document_id**）。
+
+    为什么不含 `document_id`：那要等 `documents` 写进去才有，而入库时我们需要的
+    是"这份文件属于哪个版本"—— 那是**入库之前就该知道**的事。
+    """
+
+    version_id: str
+    law_name: str
+    version_label: str | None
+    effective_date: date | None
+    validity_status: str
+
+
+def build_version_ref_index(manifest: dict[str, Any]) -> dict[str, VersionRef]:
+    """{文件名: 版本标识} —— 入库时按文件名查版本。
+
+    为什么按文件名而不是查数据库（`law_versions.document_id`）：
+        - 入库那一刻 `documents` 记录**还没写**，`document_id` 也还不存在；
+        - 清库重入时，数据库里更没有可查的东西；
+        - 而文件名在入库前后都稳定，且语料清单本身就按文件名登记。
+
+    为什么这样做不会与 `law_versions` 漂移：
+        `version_id` 是**确定性**的（由 法名|版本标签|公布日期 推出）。
+        从清单算出来的 ID，与 T-24 灌进 `law_versions` 的 ID 必然一致。
+    """
+    index: dict[str, VersionRef] = {}
+    for entry in manifest.get("files") or []:
+        vid = make_version_id(
+            entry["law_name"], entry.get("version_label"), entry.get("publish_date")
+        )
+        index[entry["file"]] = VersionRef(
+            version_id=vid,
+            law_name=entry["law_name"],
+            version_label=entry.get("version_label"),
+            effective_date=_parse_date(entry.get("effective_date")),
+            validity_status=entry.get("validity_status") or "effective",
+        )
+    return index
+
+
+def load_version_ref_index(
+    manifest_path: str | "Path | None" = None,
+) -> dict[str, VersionRef]:
+    """读语料清单并建索引。
+
+    清单不存在时返回空字典而**不抛异常** —— 入库不该因为"清单没找到"而整体失败，
+    但调用方应据此打警告（条文仍会入库，只是 `version_id` 为空、时效过滤失效）。
+    """
+    from pathlib import Path as _Path
+
+    if manifest_path is None:
+        # app/core/law_versions.py -> 项目根
+        path = _Path(__file__).resolve().parents[2] / "data" / "corpus_manifest.json"
+    else:
+        path = _Path(manifest_path)
+    if not path.exists():
+        return {}
+    import json
+
+    try:
+        return build_version_ref_index(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def make_article_id(version_id: str | None, article_no: str | None, seq: int) -> str:
+    """条文的确定性 ID。
+
+    用确定性 ID 是为了让**重新入库**变成幂等：同一份文件的同一条法条，
+    无论入库多少次，主键都一样（配合 upsert，不会产生重复条文）。
+    """
+    key = f"law_article|{version_id or 'unknown'}|{article_no or seq}"
+    return str(uuid.uuid5(_ID_NAMESPACE, key))

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.settings import settings
 from app.core.ingest import build_text_nodes, ingest_text
+from app.core.law_versions import load_version_ref_index, make_article_id
 from app.core.memory.db_store import db_manager
 from app.core.rag.embedder import Embedder
 from app.core.rag.loader import DocumentLoader
@@ -46,6 +47,9 @@ class RAGService:
         self._retriever: Optional[HybridRetriever] = None
         # 文档级元数据默认值。单用户自用, 知识库分组默认 default。
         self.default_kb_id = "default"
+        # 语料清单的"文件名 → 版本"索引（懒加载）。入库时按文件名决定
+        # law_articles.version_id，见 T-25。
+        self._version_refs: Optional[Dict[str, Any]] = None
 
     # ============================================================
     # 生命周期
@@ -115,6 +119,62 @@ class RAGService:
         """把任意支持格式的文件提取为纯文本(交给 ingest 模块处理结构)。"""
         documents = self._loader.load_file(file_path)
         return "\n\n".join((doc.text or "") for doc in documents).strip()
+
+    # ============================================================
+    # 条文层（T-25）
+    # ============================================================
+    def _version_index(self) -> Dict[str, Any]:
+        """语料清单的"文件名 → 版本标识"索引（只加载一次）。
+
+        入库时用它决定 `law_articles.version_id`。**按文件名查，不查数据库** ——
+        因为入库那一刻 `documents` 还没写、清库重入时库里更是空的，
+        而文件名在入库前后都稳定（理由详见 `app/core/law_versions.py`）。
+        """
+        if self._version_refs is None:
+            self._version_refs = load_version_ref_index()
+            if not self._version_refs:
+                logger.warning(
+                    "[RAGService] 语料清单缺失或为空（data/corpus_manifest.json）—— "
+                    "条文仍会入库，但 version_id 为空，时效过滤（T-26~T-28）将失效"
+                )
+        return self._version_refs
+
+    def _write_law_articles(self, result, original_filename: str) -> int:
+        """把解析出的条文写进 `law_articles`（权威源）。返回写入条数。
+
+        `version_id` 为空不算致命错误 —— 只说明这份文件不在语料清单里
+        （例如用户临时上传的文档），此时条文原文仍然值得留存。
+        """
+        ref = self._version_index().get(original_filename)
+        if ref is None:
+            logger.warning(
+                "[RAGService] %s 不在语料清单中 → 条文将以空 version_id 入库，"
+                "该文档不会参与时效过滤",
+                original_filename,
+            )
+        version_id = ref.version_id if ref else ""
+
+        rows = [
+            {
+                "id": make_article_id(version_id or None, section.article_no, section.seq),
+                "version_id": version_id,
+                "article_no": section.article_no or "",
+                "article_no_norm": section.article_no_norm,
+                "chapter_path": section.chapter_path,
+                "seq": section.seq,
+                "content": section.text,
+            }
+            for section in result.sections
+        ]
+
+        # 若版本种子没灌过，version_id 会悬空 → 时效过滤静默失效。这里留痕。
+        if version_id and not db_manager.law_version_exists(version_id):
+            logger.warning(
+                "[RAGService] law_versions 里没有 %s —— 请先跑 "
+                "scripts/seed_law_versions.py，否则这条 doc 的时效过滤不生效",
+                version_id,
+            )
+        return db_manager.upsert_law_articles(rows)
 
     def index_file(
         self,
@@ -219,10 +279,16 @@ class RAGService:
             document_id, status="completed", chunk_count=len(nodes)
         )
 
+        # ---- 条文层（T-25）----
+        # `law_articles` 是条文的**权威源**，向量库里的 chunk 只是它的检索索引。
+        # 放在 documents 之后写：两者同属 MySQL 侧，失败时至少文档级记录是完整的。
+        article_count = self._write_law_articles(result, original_filename)
+
         logger.info(
-            "[RAGService] 索引完成: %s -> %d 片段 | doc_type=%s strategy=%s confidence=%s source=%s",
+            "[RAGService] 索引完成: %s -> %d 片段 / %d 条文 | doc_type=%s strategy=%s confidence=%s source=%s",
             original_filename,
             len(nodes),
+            article_count,
             result.doc_type,
             result.strategy,
             result.confidence,

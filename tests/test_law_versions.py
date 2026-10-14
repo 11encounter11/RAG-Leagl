@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.law_versions import build_version_rows, make_version_id
+from app.core.law_versions import build_version_rows, make_article_id, make_version_id
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "corpus_manifest.json"
@@ -184,3 +184,104 @@ def test_real_manifest_yields_seven_laws_and_nine_versions():
         if row.validity_status != "effective":
             assert row.superseded_by, f"{row.law_name} {row.version_label} 没有指向现行版本"
             assert by_id[row.superseded_by].law_name == row.law_name
+
+
+# ============================================================
+# 入库时的版本标识（T-25）
+# ============================================================
+def test_version_ref_index_maps_filename_to_version():
+    manifest = {
+        "files": [
+            _entry(file="a.docx", law_name="甲法", version_label="v2",
+                   publish_date="2020-01-01", effective_date="2020-06-01")
+        ]
+    }
+    from app.core.law_versions import build_version_ref_index
+
+    index = build_version_ref_index(manifest)
+    ref = index["a.docx"]
+
+    assert ref.law_name == "甲法"
+    assert ref.version_label == "v2"
+    assert ref.effective_date == date(2020, 6, 1)
+    # 关键：这里算出的 ID 必须与 T-24 灌进 law_versions 的完全一致
+    assert ref.version_id == make_version_id("甲法", "v2", "2020-01-01")
+
+
+def test_article_id_is_deterministic():
+    """条文 ID 确定性 → 重新入库时 upsert 而非重复插入。"""
+    a = make_article_id("V-1", "第四十七条", 46)
+    b = make_article_id("V-1", "第四十七条", 46)
+    assert a == b
+    assert a != make_article_id("V-1", "第四十八条", 47)
+
+
+def test_article_id_falls_back_to_seq_without_article_no():
+    """FAQ / 降级文本没有条文号，用 seq 兜底，不能撞成一个 ID。"""
+    a = make_article_id("V-1", None, 1)
+    b = make_article_id("V-1", None, 2)
+    assert a != b
+
+
+# ============================================================
+# 接线测试：`index_file` 是否真的去写 law_articles
+#
+# 为什么单独写这条：函数各自都对、但"没接上线"是这项目踩过多次的坑
+# （N-12 就是 langgraph 的 config 没注入，导致 111 个离线测试全绿而真实请求全挂）。
+# 所以这里不看函数，看**装配后的行为**。
+# ============================================================
+def _fake_sections():
+    from app.core.ingest.base import ParsedSection
+
+    return [
+        ParsedSection(
+            text="第四十七条　经济补偿按劳动者在本单位工作的年限…",
+            article_no="第四十七条",
+            article_no_norm=47,
+            chapter_path="第四章 劳动合同的解除和终止",
+            seq=46,
+        )
+    ]
+
+
+def test_write_law_articles_fills_version_id_from_manifest(monkeypatch):
+    from app.services import rag_service as mod
+
+    captured = {}
+    monkeypatch.setattr(
+        mod.db_manager, "upsert_law_articles",
+        lambda rows: (captured.setdefault("rows", rows), len(rows))[1],
+    )
+    monkeypatch.setattr(mod.db_manager, "law_version_exists", lambda vid: True)
+
+    result = type("R", (), {"sections": _fake_sections()})()
+    count = mod.rag_service._write_law_articles(result, "中华人民共和国劳动法_20181229.docx")
+
+    assert count == 1
+    row = captured["rows"][0]
+    # 版本必须来自语料清单（按文件名），而不是猜的
+    assert row["version_id"] == make_version_id(
+        "中华人民共和国劳动法", "2018年修正", "2018-12-29"
+    )
+    assert row["article_no"] == "第四十七条"
+    assert row["article_no_norm"] == 47
+    assert row["chapter_path"] == "第四章 劳动合同的解除和终止"
+    assert row["content"].startswith("第四十七条")
+
+
+def test_write_law_articles_with_unknown_file_uses_empty_version(monkeypatch):
+    """不在语料清单里的文件（用户临时上传）→ version_id 留空，但条文照样入库。"""
+    from app.services import rag_service as mod
+
+    captured = {}
+    monkeypatch.setattr(
+        mod.db_manager, "upsert_law_articles",
+        lambda rows: (captured.setdefault("rows", rows), len(rows))[1],
+    )
+    monkeypatch.setattr(mod.db_manager, "law_version_exists", lambda vid: False)
+
+    result = type("R", (), {"sections": _fake_sections()})()
+    count = mod.rag_service._write_law_articles(result, "临时上传的某文件.txt")
+
+    assert count == 1
+    assert captured["rows"][0]["version_id"] == ""

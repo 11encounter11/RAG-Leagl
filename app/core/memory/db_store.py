@@ -417,6 +417,63 @@ class DatabaseManager:
         finally:
             session.close()
 
+    # ===== 条文操作（P1 / T-25）=====
+    def upsert_law_articles(self, rows: list[dict]) -> int:
+        """写入/更新一份文档的全部条文，**一次事务**。返回写入条数。
+
+        为什么和 `documents` 分开调用却仍要说是"一次事务"：
+            本方法内部自成事务（commit 一次）—— 要么这份文件的条文全进去，
+            要么一条都不进去。半截写入会让 `law_articles` 与 `documents.chunk_count`
+            对不上，而这种不一致事后很难查。
+
+        为什么用 upsert 而不是纯 insert：
+            条文 ID 是确定性的（`make_article_id`），所以**重新入库**时
+            同一份文件的同一条法条主键不变 —— upsert 保证不会产生重复条文。
+
+        rows 每项：id / version_id / article_no / article_no_norm / chapter_path / seq / content
+        """
+        if not rows:
+            return 0
+        session = self.get_session()
+        try:
+            for row in rows:
+                existing = session.get(LawArticle, row["id"])
+                if existing is None:
+                    session.add(LawArticle(**row))
+                else:
+                    for key, value in row.items():
+                        setattr(existing, key, value)
+            session.commit()
+            return len(rows)
+        finally:
+            session.close()
+
+    def count_law_articles(self, version_id: str = None) -> int:
+        """统计条文数（可按版本过滤）。上线前自检用。"""
+        session = self.get_session()
+        try:
+            query = session.query(LawArticle)
+            if version_id:
+                query = query.filter(LawArticle.version_id == version_id)
+            return query.count()
+        finally:
+            session.close()
+
+    def law_version_exists(self, version_id: str) -> bool:
+        """版本是否已灌种子。
+
+        入库时用它留痕：若 `law_articles.version_id` 指向一个 `law_versions` 里
+        不存在的版本，时效过滤会**静默失效**（join 不上 → 过滤条件永远不满足）。
+        这类"不报错但功能没了"的情况必须当场出声。
+        """
+        if not version_id:
+            return False
+        session = self.get_session()
+        try:
+            return session.query(LawVersion).filter_by(id=version_id).count() > 0
+        finally:
+            session.close()
+
     def list_documents(
         self,
         limit: int = 20,
