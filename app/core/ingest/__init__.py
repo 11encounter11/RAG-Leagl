@@ -20,7 +20,6 @@ from app.core.ingest.base import (
 from app.core.ingest.metadata import (
     DOC_TYPE_FAQ,
     DOC_TYPE_GENERIC,
-    DOC_TYPE_POLICY,
     DOC_TYPE_STATUTE,
     REQUIRED_CHUNK_FIELDS,
     missing_required_fields,
@@ -43,7 +42,6 @@ __all__ = [
     "CONFIDENCE_FALLBACK",
     "CONFIDENCE_DEGRADED",
     "DOC_TYPE_STATUTE",
-    "DOC_TYPE_POLICY",
     "DOC_TYPE_FAQ",
     "DOC_TYPE_GENERIC",
     "REQUIRED_CHUNK_FIELDS",

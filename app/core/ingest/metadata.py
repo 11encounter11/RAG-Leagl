@@ -17,7 +17,6 @@ from typing import Any
 
 # 必须存在于每条 chunk 上的字段(值为 None 也允许, 但键必须出现)
 REQUIRED_CHUNK_FIELDS: tuple[str, ...] = (
-    "tenant_id",
     "kb_id",
     "document_id",
     "doc_type",
@@ -56,8 +55,7 @@ VALIDITY_PENDING = "pending"       # 尚未生效
 
 # 文档类型
 DOC_TYPE_STATUTE = "statute"       # 法律法规 / 司法解释
-DOC_TYPE_POLICY = "policy"         # 企业规章制度
-DOC_TYPE_FAQ = "faq"               # 问答对
+DOC_TYPE_FAQ = "faq"               # 问答对(自建笔记)
 DOC_TYPE_GENERIC = "generic"       # 兜底(无结构文本)
 
 
@@ -65,8 +63,7 @@ def build_document_metadata(meta: dict[str, Any] | None) -> dict[str, Any]:
     """从上传上下文里抽出"整篇文档级"的元数据, 供每条 chunk 复用。"""
     meta = meta or {}
     return {
-        "tenant_id": meta.get("tenant_id", "platform"),
-        "kb_id": meta.get("kb_id", "public"),
+        "kb_id": meta.get("kb_id", "default"),
         "document_id": meta.get("document_id", ""),
         "doc_type": meta.get("doc_type", ""),
         "source_file": meta.get("source_file", ""),
@@ -92,10 +89,10 @@ def build_section_extra(
 ) -> dict[str, Any]:
     """组装"本条特有"的元数据。
 
-    刻意不把文档级元数据(租户/知识库/文档ID/时效/地域)放进来。
+    刻意不把文档级元数据(知识库/文档ID/时效/地域)放进来。
     理由: 那会让同一份文档的元数据出现两个来源 —— 摄取器在 parse() 时
     捕获一份, 调用方在组装节点时又想注入一份。两者不一致时, 摄取器里的
-    旧值会静默覆盖调用方的新值(曾经因此把 tenant_id 写成默认值)。
+    旧值会静默覆盖调用方的新值(曾经因此把 kb_id 写成默认值)。
     文档级元数据统一由 nodes.build_text_nodes 注入, 这里只放本条特有的。
     """
     extra: dict[str, Any] = {}
@@ -119,18 +116,17 @@ def missing_required_fields(metadata: dict[str, Any]) -> list[str]:
 # 为什么必须显式声明(测试期发现, 记为 N-5):
 #   被测版本 llama-index-vector-stores-milvus==1.2.0 的存储布局是
 #   `id / doc_id / text / embedding` —— **元数据不会被自动存下来**。
-#   如果不声明 scalar_field_names, 那么 article_no / validity_status /
-#   tenant_id 这些字段在入库后就丢了, 引用溯源、时效过滤、租户隔离
-#   全部静默失效(检索还能返回文本, 所以你甚至看不出错了)。
+#   如果不声明 scalar_field_names, 那么 article_no / validity_status
+#   这些字段在入库后就丢了, 引用溯源与时效过滤全部静默失效
+#   (检索还能返回文本, 所以你甚至看不出错了)。
 #
 # 声明之后还带来一个额外好处: 这些字段成为真实的 Milvus 标量字段,
-# 于是"把时效/租户过滤下推到查询表达式"才有了实现基础。
+# 于是"把时效/知识库过滤下推到查询表达式"才有了实现基础。
 #
 # 类型用字符串表示, 不在契约层 import pymilvus —— 契约不该依赖具体存储实现,
 # 由 vector_store.py 负责把字符串映射成 DataType。
 MILVUS_SCALAR_FIELDS: dict[str, str] = {
     # ---- 文档级 ----
-    "tenant_id": "VARCHAR",
     "kb_id": "VARCHAR",
     "document_id": "VARCHAR",
     "doc_type": "VARCHAR",

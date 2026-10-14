@@ -58,11 +58,6 @@ class StatuteIngestor(BaseIngestor):
         if signals.article_count < 3:
             return 0.0
         score = min(0.99, 0.6 + signals.article_count / 200.0)
-        # 企业内部的制度文件也常用"第X条", 但文件名会暴露它。
-        # 这里主动压低得分, 让 PolicyIngestor 有机会胜出,
-        # 从而避免把员工手册当成国家法规处理(那会导致 law_name/章节路径错位)。
-        if re.search(r"(手册|管理制度|管理办法|操作规范|操作流程|员工|考勤|报销|薪酬|绩效)", filename or ""):
-            score *= 0.5
         return score
 
 

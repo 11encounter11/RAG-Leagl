@@ -18,6 +18,10 @@
 用法:
     python scripts/probe_vector_store.py
     python scripts/probe_vector_store.py --sample 5
+    python scripts/probe_vector_store.py --source data/raw/中华人民共和国劳动法_20181229.docx
+
+默认会把 data/raw 下所有语料都重算一遍做比对(对齐键是「文件名 + 条文号」,
+不是单独的条文号 —— 多部法都有"第三十六条", 只用条文号会撞号)。
 """
 from __future__ import annotations
 
@@ -35,10 +39,49 @@ from app.core.rag.vector_store import VectorStoreManager  # noqa: E402
 FAIL = "❌"
 OK = "✅"
 
+SUPPORTED_EXT = {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}
+
+
+def _resolve_sources(cli_sources: list[str] | None) -> list[Path]:
+    """比对用的原始语料。命令行没给就扫描 data/raw。"""
+    if cli_sources:
+        return [Path(p) for p in cli_sources if Path(p).exists()]
+    raw = Path("data/raw")
+    if not raw.is_dir():
+        return []
+    return sorted(p for p in raw.iterdir() if p.suffix.lower() in SUPPORTED_EXT)
+
+
+def _expected_display_texts(sources: list[Path]) -> dict[tuple[str, str | None], str]:
+    """用与入库完全相同的链路重算每份语料, 返回 (文件名, 条文号) -> 干净原文。"""
+    from app.core.rag.loader import DocumentLoader
+
+    loader = DocumentLoader()
+    expected: dict[tuple[str, str | None], str] = {}
+    for path in sources:
+        try:
+            docs = loader.load_file(str(path))
+        except Exception as exc:  # noqa: BLE001 - 单份语料读不了不该中断探针
+            print(f"      (跳过 {path.name}: {exc})")
+            continue
+        text = "\n\n".join((doc.text or "") for doc in docs).strip()
+        if not text:
+            continue
+        result, _, _ = ingest_text(text, filename=path.name)
+        for section in result.sections:
+            expected[(path.name, section.article_no)] = section.text
+    return expected
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Milvus 向量库探针")
     parser.add_argument("--sample", type=int, default=3, help="抽查几条片段")
+    parser.add_argument(
+        "--source",
+        nargs="*",
+        default=None,
+        help="用于比对的原始语料; 默认扫描 data/raw 下所有支持的文件",
+    )
     args = parser.parse_args()
 
     print("=" * 72)
@@ -89,33 +132,41 @@ def main() -> int:
         print(f"{FAIL} 读回为空 —— BM25 语料将无法重建")
         return 1
 
-    # 用同一条 ingest 链路重算一遍, 逐字段比对
-    source = Path("data/raw/劳动法.txt")
-    if source.exists():
-        text = source.read_text(encoding="utf-8", errors="ignore")
-        result, _, _ = ingest_text(text, filename=source.name)
-        by_article = {section.article_no: section.text for section in result.sections}
+    # 用同一条 ingest 链路重算一遍, 逐字段比对。
+    # 对齐键必须是「文件名 + 条文号」: 多部法都有"第三十六条", 只用条文号会撞号,
+    # 那样比对结果会随机命中另一部法的同名条文, 制造假不一致。
+    sources = _resolve_sources(args.source)
+    if not sources:
+        print(f"{FAIL} data/raw 下没找到可比对的语料, 读回一致性无法验证")
+        return 1
 
-        compared = 0
-        mismatched = []
-        for record in records:
-            meta = record.get("metadata") or {}
-            article_no = meta.get("article_no")
-            if not article_no or article_no not in by_article:
-                continue
-            compared += 1
-            expected_text = by_article[article_no]
-            got_display = meta.get("display_text") or ""
-            # 读回的 display_text 必须与入库前的原文一致
-            if got_display != expected_text:
-                mismatched.append((article_no, expected_text[:40], got_display[:40]))
-        print(f"{OK} 逐条比对 {compared} 条(以 article_no 对齐)")
-        if mismatched:
-            print(f"{FAIL} {len(mismatched)} 条 display_text 与原文不一致:")
-            for article_no, want, got in mismatched[:5]:
-                print(f"      {article_no}\n        期望: {want}\n        实际: {got}")
-            return 1
-        print(f"{OK} display_text 与入库前原文完全一致")
+    expected = _expected_display_texts(sources)
+    print(f"比对语料: {len(sources)} 份, 期望片段 {len(expected)} 条")
+
+    compared = 0
+    mismatched = []
+    for record in records:
+        meta = record.get("metadata") or {}
+        key = (meta.get("filename"), meta.get("article_no"))
+        if not key[0] or not key[1] or key not in expected:
+            continue
+        compared += 1
+        want = expected[key]
+        got = meta.get("display_text") or ""
+        # 读回的 display_text 必须与入库前的原文一致
+        if got != want:
+            mismatched.append((key, want[:40], got[:40]))
+
+    print(f"{OK} 逐条比对 {compared} 条(以「文件名+条文号」对齐)")
+    if mismatched:
+        print(f"{FAIL} {len(mismatched)} 条 display_text 与原文不一致:")
+        for key, want, got in mismatched[:5]:
+            print(f"      {key[0]} {key[1]}\n        期望: {want}\n        实际: {got}")
+        return 1
+    if compared == 0:
+        print(f"{FAIL} 一条都没比对上 —— 检索结果与语料对不上号, 不要当成通过")
+        return 1
+    print(f"{OK} display_text 与入库前原文完全一致")
 
     # ---------- 3. 抽查 ----------
     print("-" * 72)
@@ -124,7 +175,7 @@ def main() -> int:
         print(f"  id       : {record['id']}")
         print(f"  条文     : {meta.get('article_no')} / {meta.get('chapter_path')}")
         print(f"  策略留痕 : {meta.get('chunk_strategy')} ({meta.get('strategy_confidence')})")
-        print(f"  时效     : {meta.get('validity_status')}  租户: {meta.get('tenant_id')}")
+        print(f"  时效     : {meta.get('validity_status')}  知识库: {meta.get('kb_id')}")
         print(f"  text     : {record['text'][:60]!r}")
         print(f"  display  : {(meta.get('display_text') or '')[:60]!r}")
         print()

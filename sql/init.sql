@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 -- 知识库文档表
 -- 与 app/core/memory/db_store.py 的 Document 模型必须保持一致。
--- tenant_id / kb_id 从第一张表就带上, 避免 P2 做多租户时全库迁移。
+-- kb_id 作为知识库分组(如按法律领域/主题分库)。
 CREATE TABLE IF NOT EXISTS documents (
     id VARCHAR(64) PRIMARY KEY COMMENT '文档ID（UUID）',
     filename VARCHAR(255) NOT NULL COMMENT '落盘的文件名',
@@ -39,11 +39,10 @@ CREATE TABLE IF NOT EXISTS documents (
     status VARCHAR(20) DEFAULT 'pending' COMMENT '状态：pending/processing/completed/failed',
     error_message TEXT DEFAULT NULL COMMENT '错误信息',
 
-    tenant_id VARCHAR(64) NOT NULL DEFAULT 'platform' COMMENT '租户ID',
-    kb_id VARCHAR(64) NOT NULL DEFAULT 'public' COMMENT '知识库ID',
+    kb_id VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '知识库ID',
 
     content_hash VARCHAR(64) DEFAULT NULL COMMENT '文件内容SHA256，用于重复上传去重',
-    doc_type VARCHAR(32) DEFAULT NULL COMMENT '文档类型：statute/policy/faq/generic',
+    doc_type VARCHAR(32) DEFAULT NULL COMMENT '文档类型：statute/faq/generic',
     doc_type_source VARCHAR(32) DEFAULT NULL COMMENT '类型判定来源：user/filename/detector/generic',
     chunk_strategy VARCHAR(64) DEFAULT NULL COMMENT '实际使用的切分策略',
     strategy_confidence VARCHAR(16) DEFAULT NULL COMMENT '策略置信度',
@@ -53,6 +52,6 @@ CREATE TABLE IF NOT EXISTS documents (
     processed_at DATETIME DEFAULT NULL COMMENT '处理完成时间',
     INDEX idx_status (status),
     INDEX idx_created_at (created_at),
-    INDEX idx_tenant_kb (tenant_id, kb_id),
+    INDEX idx_kb (kb_id),
     INDEX idx_content_hash (content_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文档表';

@@ -32,17 +32,16 @@ UPLOAD_DIR = "data/raw"
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt"}
 
 # 与 app/core/ingest/registry.py 中注册的类型保持一致
-SUPPORTED_DOC_TYPES = {"statute", "policy", "faq", "generic"}
+SUPPORTED_DOC_TYPES = {"statute", "faq", "generic"}
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, summary="上传文档")
 async def upload_document(
     file: UploadFile = File(...),
     doc_type: Optional[str] = Form(
-        None, description="文档类型: statute(法律法规) / policy(规章制度) / faq / generic, 不传则自动判定"
+        None, description="文档类型: statute(法律法规) / faq(问答) / generic, 不传则自动判定"
     ),
-    tenant_id: str = Form("platform"),
-    kb_id: str = Form("public"),
+    kb_id: str = Form("default"),
 ):
     """上传文档并索引到向量数据库。"""
     original_filename = file.filename or "unknown"
@@ -69,7 +68,6 @@ async def upload_document(
             saved_path,
             original_filename=original_filename,
             doc_type=doc_type,
-            tenant_id=tenant_id,
             kb_id=kb_id,
         )
     except Exception as exc:  # noqa: BLE001
@@ -98,13 +96,12 @@ async def upload_document(
 async def list_documents(
     limit: int = 20,
     offset: int = 0,
-    tenant_id: Optional[str] = None,
     kb_id: Optional[str] = None,
 ):
     """获取已索引的文档列表。"""
-    docs = db_manager.list_documents(limit=limit, offset=offset, tenant_id=tenant_id, kb_id=kb_id)
+    docs = db_manager.list_documents(limit=limit, offset=offset, kb_id=kb_id)
     return {
-        "total": db_manager.count_documents(tenant_id=tenant_id, kb_id=kb_id),
+        "total": db_manager.count_documents(kb_id=kb_id),
         "items": [
             DocumentInfo(
                 id=d.id,
@@ -114,7 +111,6 @@ async def list_documents(
                 file_size=d.file_size,
                 chunk_count=d.chunk_count,
                 status=d.status,
-                tenant_id=d.tenant_id,
                 kb_id=d.kb_id,
                 doc_type=d.doc_type,
                 doc_type_source=d.doc_type_source,
@@ -156,15 +152,14 @@ async def get_chunk(chunk_id: str):
 async def index_directory(
     dir_path: str = "data/raw",
     doc_type: Optional[str] = None,
-    tenant_id: str = "platform",
-    kb_id: str = "public",
+    kb_id: str = "default",
 ):
     """索引指定目录下的所有文档。"""
     if not os.path.exists(dir_path):
         raise HTTPException(status_code=404, detail=f"目录不存在: {dir_path}")
 
     result = rag_service.index_directory(
-        dir_path, doc_type=doc_type, tenant_id=tenant_id, kb_id=kb_id
+        dir_path, doc_type=doc_type, kb_id=kb_id
     )
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["message"])

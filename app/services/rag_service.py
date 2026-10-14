@@ -44,9 +44,8 @@ class RAGService:
         self._embedder = Embedder()
         self._vector_store = VectorStoreManager(embed_model=self._embedder.embed_model)
         self._retriever: Optional[HybridRetriever] = None
-        # 文档级元数据默认值。P0 阶段先用固定租户, P2 接入认证后从 token 解析。
-        self.default_tenant_id = "platform"
-        self.default_kb_id = "public"
+        # 文档级元数据默认值。单用户自用, 知识库分组默认 default。
+        self.default_kb_id = "default"
 
     # ============================================================
     # 生命周期
@@ -123,7 +122,6 @@ class RAGService:
         *,
         original_filename: Optional[str] = None,
         doc_type: Optional[str] = None,
-        tenant_id: Optional[str] = None,
         kb_id: Optional[str] = None,
         doc_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -134,13 +132,12 @@ class RAGService:
              "strategy_confidence", "structure_detected", "message"}
         """
         path = Path(file_path)
-        tenant_id = tenant_id or self.default_tenant_id
         kb_id = kb_id or self.default_kb_id
         original_filename = original_filename or path.name
         content_hash = compute_content_hash(path)
 
         # ---- 去重(F1.8): 同一知识库内内容相同就不再入库 ----
-        existing = db_manager.find_document_by_hash(tenant_id, kb_id, content_hash)
+        existing = db_manager.find_document_by_hash(kb_id, content_hash)
         if existing:
             logger.info("[RAGService] 内容重复, 跳过入库: %s", original_filename)
             return {
@@ -153,11 +150,19 @@ class RAGService:
 
         text = self._extract_text(str(path))
         if not text:
+            # 需求 F1.2: PDF 要区分"有文字层"和"扫描件"。
+            # OCR 已明确不做(见 01-需求文档.md §四), 所以扫描件在这里被明确拒绝并说明原因,
+            # 而不是产出一个空的 chunk 列表(那会让"扫描件"伪装成"文档里没有内容")。
+            if path.suffix.lower() == ".pdf":
+                return {
+                    "success": False,
+                    "message": "该 PDF 未提取到文字层，可能是扫描件；当前版本不支持 OCR，"
+                    "请上传有文字层的 PDF 或纯文本文件。",
+                }
             return {"success": False, "message": "文件内容为空或无法解析"}
 
         document_id = str(uuid.uuid4())
         meta: Dict[str, Any] = {
-            "tenant_id": tenant_id,
             "kb_id": kb_id,
             "document_id": document_id,
             "source_file": str(path),
@@ -179,7 +184,6 @@ class RAGService:
                 original_filename=original_filename,
                 file_type=path.suffix[1:].lower(),
                 file_size=path.stat().st_size,
-                tenant_id=tenant_id,
                 kb_id=kb_id,
                 content_hash=content_hash,
                 doc_type=result.doc_type,
@@ -203,7 +207,6 @@ class RAGService:
             original_filename=original_filename,
             file_type=path.suffix[1:].lower(),
             file_size=path.stat().st_size,
-            tenant_id=tenant_id,
             kb_id=kb_id,
             content_hash=content_hash,
             doc_type=result.doc_type,

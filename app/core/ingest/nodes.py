@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llama_index.core.schema import TextNode
+from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
 
 from app.core.ingest.base import IngestResult, ParsedSection
 from app.core.ingest.metadata import (
@@ -33,7 +33,6 @@ from app.core.ingest.metadata import (
 # 为什么不用 None: Milvus 标量字段对 NULL 支持不佳, 且过滤表达式
 # 统一用 == "" 判断"不限定"比处理 NULL 简单得多。
 _STRING_REQUIRED = {
-    "tenant_id",
     "kb_id",
     "document_id",
     "doc_type",
@@ -112,7 +111,27 @@ def build_text_nodes(
         text = f"{prefix}\n{section.text}" if prefix else section.text
         metadata["display_text"] = section.text
 
+        # 必须显式声明"这条片段来自哪份文档", 否则元数据里的 document_id 会被框架改写。
+        #
+        # llama_index 的 node_to_metadata_dict() 里有这么三行(与我们要写的字段同名):
+        #     metadata["document_id"] = node.ref_doc_id or "None"
+        #     metadata["doc_id"]      = node.ref_doc_id or "None"
+        #     metadata["ref_doc_id"]  = node.ref_doc_id or "None"
+        # 它是为 Chroma/Pinecone 等后端准备的, 但**会覆盖掉我们自己传进去的
+        # document_id**。我们若不声明来源关系, 它就把这个字段写成字符串 "None" ——
+        # 不报错、字段还在、看着像占位符, 属于最难发现的静默覆盖。
+        #
+        # 后果: 向量库里所有片段的 document_id 都是 "None", 于是"删除文档时按
+        # document_id 清理向量"永远匹配不到 → 删了文档, 向量还在(孤儿向量)。
+        #
+        # 注意: ref_doc_id 在 llama-index 里是只读属性(由 node 关系推导),
+        # 当作构造参数传进去会被静默忽略 —— 必须设置 SOURCE 关系。
         node = TextNode(text=text, metadata=_sanitize(metadata))
+        document_id = metadata.get("document_id")
+        if document_id:
+            node.relationships[NodeRelationship.SOURCE] = RelatedNodeInfo(
+                node_id=str(document_id)
+            )
         missing = missing_required_fields(node.metadata)
         if missing:
             raise ValueError(f"chunk 元数据缺字段 {missing}: {node.metadata}")

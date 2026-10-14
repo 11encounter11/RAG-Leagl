@@ -4,9 +4,9 @@
 设计依据: docs/02a-文档解析与切分策略设计.md §三
 
 判定优先级(从最可靠到最自动):
-    ① user_hint     上传时用户指定          <- 主路径, 企业法务知道自己传的是什么
+    ① user_hint     上传时用户指定          <- 主路径, 你自己知道传的是什么
     ② 结构探测器     正则判断有无"第X条"/编号  <- 确定性判断, 优先于任何概率模型
-    ③ 文件名规则     *手册* / *管理办法* / *条例*
+    ③ 文件名规则     *faq* / *问答* / *条例*
     ④ 通用兜底       递归分隔符 + 定长窗口
 
 刻意不做的: 用 LLM 给文档分类。
@@ -22,7 +22,6 @@ from typing import Any
 from app.core.ingest.base import BaseIngestor, IngestResult
 from app.core.ingest.faq import FaqIngestor
 from app.core.ingest.generic import GenericIngestor
-from app.core.ingest.policy import PolicyIngestor
 from app.core.ingest.statute import StatuteIngestor
 
 # 判定来源(会写入 documents.doc_type_source, 用于质量归因)
@@ -37,8 +36,6 @@ DETECTOR_MIN_SCORE = 0.5
 REGISTRY: dict[str, BaseIngestor] = {}
 
 _FILENAME_RULES: list[tuple[re.Pattern[str], str]] = [
-    # 企业文档优先判断: "管理办法" 同时能匹配法规名, 必须先拦住
-    (re.compile(r"(手册|管理制度|管理办法|操作规范|操作流程|员工|考勤|报销|薪酬|入职|离职|绩效)"), "policy"),
     (re.compile(r"(faq|问答|常见问题|答疑)", re.IGNORECASE), "faq"),
     (re.compile(r"(中华人民共和国|条例|司法解释|实施细则|办法$)"), "statute"),
 ]
@@ -151,7 +148,6 @@ def ingest_text(
 
 def _register_builtins() -> None:
     register(StatuteIngestor())
-    register(PolicyIngestor())
     register(FaqIngestor())
     register(GenericIngestor())
 

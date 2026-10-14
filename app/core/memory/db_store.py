@@ -3,6 +3,7 @@ MySQL 数据库存储 - 对话历史持久化
 使用 SQLAlchemy ORM
 """
 import uuid
+import logging
 from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import create_engine, Column, String, Text, Integer, DateTime, JSON, ForeignKey, func
@@ -10,6 +11,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
@@ -50,7 +53,7 @@ class Document(Base):
     P0 新增字段都是为了回应两个具体验收:
       - 追溯   : original_filename / content_hash / doc_type / chunk_strategy 必须落库,
                  否则"这条片段是怎么切出来的"无从审计;
-      - 多租户 : tenant_id / kb_id 从第一张表就带上, 避免 P2 改造时全库迁移。
+      - 分组   : kb_id 作为知识库分组(如按法律领域/主题分库)。
     """
     __tablename__ = "documents"
 
@@ -63,9 +66,8 @@ class Document(Base):
     status = Column(String(20), default="pending", comment="状态")
     error_message = Column(Text, nullable=True, comment="错误信息")
 
-    # ===== 多租户 =====
-    tenant_id = Column(String(64), default="platform", nullable=False, index=True, comment="租户ID")
-    kb_id = Column(String(64), default="public", nullable=False, index=True, comment="知识库ID")
+    # ===== 知识库分组 =====
+    kb_id = Column(String(64), default="default", nullable=False, index=True, comment="知识库ID")
 
     # ===== 解析与切分留痕 =====
     content_hash = Column(String(64), nullable=True, index=True, comment="文件内容SHA256(去重用)")
@@ -90,7 +92,10 @@ class DatabaseManager:
     def init_db(self):
         """初始化数据库连接和表"""
         if self._engine is None:
-            print(f"[Database] 连接 MySQL: {settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}")
+            logger.info(
+                "[Database] 连接 MySQL: %s:%s/%s",
+                settings.MYSQL_HOST, settings.MYSQL_PORT, settings.MYSQL_DATABASE,
+            )
             self._engine = create_engine(
                 settings.mysql_url,
                 pool_size=10,
@@ -100,7 +105,7 @@ class DatabaseManager:
             )
             self._session_factory = sessionmaker(bind=self._engine)
             Base.metadata.create_all(self._engine)
-            print("[Database] 数据库表创建完成")
+            logger.info("[Database] 数据库表创建完成")
 
     def get_session(self) -> Session:
         """获取数据库会话"""
@@ -155,6 +160,19 @@ class DatabaseManager:
             if conv:
                 session.delete(conv)
                 session.commit()
+        finally:
+            session.close()
+
+    def rename_conversation(self, conversation_id: str, title: str) -> bool:
+        """重命名会话(F5.1)。返回是否命中并更新。"""
+        session = self.get_session()
+        try:
+            conv = session.query(Conversation).filter_by(id=conversation_id).first()
+            if not conv:
+                return False
+            conv.title = title
+            session.commit()
+            return True
         finally:
             session.close()
 
@@ -225,8 +243,7 @@ class DatabaseManager:
         file_size: int,
         *,
         original_filename: str = None,
-        tenant_id: str = "platform",
-        kb_id: str = "public",
+        kb_id: str = "default",
         content_hash: str = None,
         doc_type: str = None,
         doc_type_source: str = None,
@@ -243,7 +260,6 @@ class DatabaseManager:
                 original_filename=original_filename or filename,
                 file_type=file_type,
                 file_size=file_size,
-                tenant_id=tenant_id,
                 kb_id=kb_id,
                 content_hash=content_hash,
                 doc_type=doc_type,
@@ -266,9 +282,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def find_document_by_hash(
-        self, tenant_id: str, kb_id: str, content_hash: str
-    ) -> Optional[Document]:
+    def find_document_by_hash(self, kb_id: str, content_hash: str) -> Optional[Document]:
         """按内容哈希在同一知识库内查重(F1.8)。"""
         if not content_hash:
             return None
@@ -276,7 +290,7 @@ class DatabaseManager:
         try:
             return (
                 session.query(Document)
-                .filter_by(tenant_id=tenant_id, kb_id=kb_id, content_hash=content_hash)
+                .filter_by(kb_id=kb_id, content_hash=content_hash)
                 .filter(Document.status == "completed")
                 .first()
             )
@@ -315,15 +329,12 @@ class DatabaseManager:
         self,
         limit: int = 20,
         offset: int = 0,
-        tenant_id: str = None,
         kb_id: str = None,
     ) -> List[Document]:
-        """获取文档列表(可按租户/知识库过滤)。"""
+        """获取文档列表(可按知识库过滤)。"""
         session = self.get_session()
         try:
             query = session.query(Document)
-            if tenant_id:
-                query = query.filter(Document.tenant_id == tenant_id)
             if kb_id:
                 query = query.filter(Document.kb_id == kb_id)
             return (
@@ -332,13 +343,11 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def count_documents(self, tenant_id: str = None, kb_id: str = None) -> int:
+    def count_documents(self, kb_id: str = None) -> int:
         """统计文档数。"""
         session = self.get_session()
         try:
             query = session.query(Document)
-            if tenant_id:
-                query = query.filter(Document.tenant_id == tenant_id)
             if kb_id:
                 query = query.filter(Document.kb_id == kb_id)
             return query.count()

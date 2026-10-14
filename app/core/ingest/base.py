@@ -45,7 +45,7 @@ class ParsedSection:
     article_no: str | None = None       # "第四十七条"
     article_no_norm: int | None = None  # 47
     chapter_path: str | None = None     # "第四章 劳动合同的解除和终止"
-    section_path: str | None = None     # 通用层级路径(企业制度用)
+    section_path: str | None = None     # 通用层级路径
     clause_no: str | None = None        # "1.1" / "一、" (合同/制度用)
     question: str | None = None         # FAQ 用: 独立存问题, 便于 query 匹配
 

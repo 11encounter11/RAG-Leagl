@@ -53,18 +53,6 @@ LONG_ARTICLE_LAW = (
     + "\n\n第三条 结尾条文。\n"
 )
 
-POLICY_TEXT = """员工考勤管理办法
-
-一、总则
-本制度适用于公司全体正式员工。
-
-二、考勤时间
-工作日上午九点上班，下午六点下班。
-
-三、请假流程
-需提前一天在系统内提交申请，由直属主管审批。
-"""
-
 FAQ_TEXT = """常见问题
 
 问：试用期最长可以约定多久？
@@ -199,14 +187,6 @@ def test_resolve_respects_user_hint():
     assert source == "user"
 
 
-def test_resolve_enterprise_policy_beats_statute_when_many_articles():
-    """企业制度也常用"第X条", 但文件名应让它落到 policy。"""
-    text = "员工手册\n\n" + "\n\n".join(f"第{n}条 内容。" for n in ["一", "二", "三", "四", "五"])
-    ingestor, source, _ = resolve_ingestor(text, "员工手册.txt")
-    assert ingestor.doc_type == "policy"
-    assert source == "detector"
-
-
 def test_resolve_structureless_to_generic():
     ingestor, source, _ = resolve_ingestor(STRUCTURELESS_TEXT, "随笔.txt")
     assert ingestor.doc_type == "generic"
@@ -240,7 +220,7 @@ def test_fallback_ingestor_used_when_hint_ingestor_yields_nothing():
 
 def test_contextual_prefix_injected_into_node_text():
     result, _, _ = ingest_text(LAW_TEXT, filename="测试法.txt")
-    nodes = build_text_nodes(result, doc_meta={"tenant_id": "t1", "kb_id": "kb1"})
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "kb1"})
     third = next(n for n in nodes if n.metadata.get("article_no") == "第三条")
     # 前缀让"章节标题里的词"也能被检索到
     assert "中华人民共和国测试法" in third.text
@@ -261,7 +241,6 @@ def test_node_metadata_is_complete():
     nodes = build_text_nodes(
         result,
         doc_meta={
-            "tenant_id": "tenant_a",
             "kb_id": "kb_law",
             "document_id": "doc_1",
             "source_file": "/tmp/测试法.txt",
@@ -271,7 +250,6 @@ def test_node_metadata_is_complete():
     assert nodes
     for node in nodes:
         assert missing_required_fields(node.metadata) == []
-        assert node.metadata["tenant_id"] == "tenant_a"
         assert node.metadata["kb_id"] == "kb_law"
         assert node.metadata["document_id"] == "doc_1"
         assert node.metadata["doc_type"] == "statute"
@@ -285,7 +263,7 @@ def test_node_metadata_is_complete():
 def test_node_metadata_values_are_storable_types():
     """Milvus 标量字段只接受 str/int/float/bool, 不接受 None 或容器。"""
     result, _, _ = ingest_text(LAW_TEXT, filename="测试法.txt")
-    nodes = build_text_nodes(result, doc_meta={"tenant_id": "t", "kb_id": "k"})
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "k"})
     for node in nodes:
         for key, value in node.metadata.items():
             assert value is not None, f"{key} 为 None, Milvus 存不进去"
@@ -295,6 +273,6 @@ def test_node_metadata_values_are_storable_types():
 def test_required_field_list_is_fully_covered():
     """契约里的必填字段必须真的出现在产出里(而不是靠事后占位补空)。"""
     result, _, _ = ingest_text(LAW_TEXT, filename="测试法.txt")
-    nodes = build_text_nodes(result, doc_meta={"tenant_id": "t", "kb_id": "k"})
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "k"})
     produced = set(nodes[0].metadata.keys())
     assert set(REQUIRED_CHUNK_FIELDS) - produced == set()

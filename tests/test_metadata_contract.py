@@ -44,7 +44,7 @@ def test_display_text_is_declared():
 
 def test_article_and_validity_fields_are_declared():
     """引用溯源与时效过滤依赖这几个字段, 缺一个对应能力就静默失效。"""
-    for field in ("article_no", "chapter_path", "validity_status", "tenant_id", "document_id"):
+    for field in ("article_no", "chapter_path", "validity_status", "document_id", "kb_id"):
         assert field in MILVUS_SCALAR_FIELDS, f"{field} 未落库"
 
 
@@ -124,22 +124,59 @@ def test_nodes_carry_all_scalar_fields_after_sanitize():
 
     text = "第一条 为了保护劳动者的合法权益，调整劳动关系。\n第二条 在中华人民共和国境内的企业适用本法。"
     result, _, _ = ingest_text(text, filename="测试法.txt", user_hint="statute")
-    nodes = build_text_nodes(result, doc_meta={"tenant_id": "t1", "kb_id": "kb1"})
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "kb1"})
 
     assert nodes
     for node in nodes:
         merged = ensure_scalar_defaults(node.metadata)
         assert set(MILVUS_SCALAR_FIELDS) <= set(merged)
-        assert merged["tenant_id"] == "t1"
         assert merged["kb_id"] == "kb1"
         assert merged["display_text"], "干净原文必须存在, 否则引用展示会带检索前缀"
 
 
-@pytest.mark.parametrize("field", ["tenant_id", "kb_id", "document_id", "display_text"])
+@pytest.mark.parametrize("field", ["kb_id", "document_id", "display_text"])
 def test_critical_fields_appear_on_nodes(field):
     from app.core.ingest import build_text_nodes, ingest_text
 
     text = "第一条 测试内容。"
     result, _, _ = ingest_text(text, filename="测试法.txt", user_hint="statute")
-    nodes = build_text_nodes(result, doc_meta={"tenant_id": "t", "document_id": "d"})
+    nodes = build_text_nodes(result, doc_meta={"document_id": "d"})
     assert field in nodes[0].metadata
+
+
+def test_document_id_survives_framework_metadata_rewrite():
+    """回归(2026-10-14): document_id 会被 llama_index 静默覆盖成字符串 "None"。
+
+    llama_index 的 node_to_metadata_dict() 里有:
+        metadata["document_id"] = node.ref_doc_id or "None"
+    它是为 Chroma/Pinecone 准备的, 但会**覆盖我们传进去的 document_id**。
+    我们若不声明节点的 SOURCE 关系, 这个字段就会变成字符串 "None" ——
+    不报错、字段还在, 于是"按 document_id 删向量"永远匹配不到,
+    删了文档向量仍留在库里(孤儿向量), 而且没有任何报错。
+
+    这里不测我们自己的封装, 而是直接跑框架那个真正会覆盖的函数 ——
+    只有这样才拦得住"框架改了行为"或"我们哪天不再声明关系"。
+    """
+    from llama_index.core.vector_stores.utils import node_to_metadata_dict
+
+    from app.core.ingest import build_text_nodes, ingest_text
+
+    text = "第一条 测试内容。"
+    result, _, _ = ingest_text(text, filename="测试法.txt", user_hint="statute")
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "k", "document_id": "DOC-123"})
+
+    assert nodes[0].ref_doc_id == "DOC-123"
+
+    # 走一遍框架真正使用的那个转换, 确认我们的值活下来了
+    entry = node_to_metadata_dict(nodes[0], remove_text=True)
+    assert entry["document_id"] == "DOC-123", "document_id 被框架覆盖了"
+
+
+def test_no_source_relation_when_document_id_absent():
+    """没有 document_id 时不该硬造一个来源关系。"""
+    from app.core.ingest import build_text_nodes, ingest_text
+
+    text = "第一条 测试内容。"
+    result, _, _ = ingest_text(text, filename="测试法.txt", user_hint="statute")
+    nodes = build_text_nodes(result, doc_meta={"kb_id": "k"})
+    assert nodes[0].ref_doc_id is None
