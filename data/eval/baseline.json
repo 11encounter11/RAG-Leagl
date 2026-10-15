@@ -1,76 +1,99 @@
 {
-  "stale": true,
-  "stale_reason": "语料已于 2026-10-14 从单文档(AI 生成的 劳动法.txt, 107 片段)更换为 9 份官方文本(703 片段, 含 2 组版本对)。检索难度不同, 本基线不再可用于比较, 必须重跑 run_eval.py 生成新基线。",
-  "created_at": "2026-09-21 12:26:44",
-  "source_report": "data/eval/reports/run-direct-20260921-122605.json",
-  "purpose": "P0 检索基线。后续任何检索相关改动都必须与这组数字比较, 不低于基线才算通过(门禁 C)。",
+  "stale": false,
+  "created_at": "2026-10-15 10:52:09",
+  "source_report": "data/eval/reports/run-direct-20261015-105209.json",
+  "purpose": "P1 检索基线。后续任何检索相关改动都必须与这组数字比较, 不低于基线才算通过(门禁 C)。",
+  "caveat": "ground truth 仍有 6 条标准答案锚定在《劳动法》(见 04-P1任务清单 T-21), 复核前 recall 类指标系统性偏低; 另外 ground truth 不区分版本, 所以 precision / NDCG 对'靠旧版命中'照单全收 —— 比较开/关时效过滤请用 stale_ratio_at_k, 不要用这两个。",
   "config": {
     "mode": "direct",
     "top_k": 5,
     "rerank": false,
-    "query_rewrite": false,
-    "note": "重排关闭(环境内存不足无法加载 Cross-Encoder)、Query 改写关闭(纯检索评测不含 LLM)。BM25 已启用, 即真正的向量+BM25+RRF 混合检索基线。"
+    "query_rewrite": true,
+    "validity_filter": true,
+    "note": "重排关闭(环境内存不足无法加载 Cross-Encoder)。BM25 已启用, 即真正的向量+BM25+RRF 混合检索基线。时效过滤默认开启。"
   },
   "corpus": {
-    "documents": 1,
-    "file": "data/raw/劳动法.txt",
-    "articles": 107,
-    "chunks": 107,
+    "documents": 9,
+    "files": "data/raw/*.docx (9 份官方文本, 7 部法, 含 2 组版本对)",
+    "articles": 703,
+    "chunks": 703,
     "collection": "knowledge_base",
-    "embedding_model": "embedding-3 (智谱, 1024 维)"
+    "embedding_model": "embedding-3 (智谱, 1024 维)",
+    "note": "本组数字是在'嵌入内容不再混入元数据'(提交 d444a17)之后重灌的向量上测得的。修前同配置为 Recall 0.7222 / MRR 0.5579 / NDCG 0.5848。"
   },
   "metrics": {
-    "recall_at_k": 0.9722,
-    "full_recall_at_k": 0.8889,
-    "mrr": 0.8449,
-    "ndcg_at_k": 0.8361,
-    "precision_at_k": 0.2889,
+    "recall_at_k": 0.8056,
+    "full_recall_at_k": 0.7222,
+    "mrr": 0.5222,
+    "ndcg_at_k": 0.5796,
+    "precision_at_k": 0.2,
+    "stale_ratio_at_k": 0.0,
+    "questions_with_stale": 0,
     "refusal_accuracy": 0.0
   },
   "by_kind": {
     "colloquial": {
       "n": 14,
-      "recall": 0.9286,
-      "mrr": 0.7024,
-      "ndcg": 0.7116
+      "recall": 0.7857,
+      "mrr": 0.5345,
+      "ndcg": 0.5943
     },
     "compound": {
       "n": 2,
       "recall": 1.0,
-      "mrr": 1.0,
-      "ndcg": 0.897
+      "mrr": 0.6667,
+      "ndcg": 0.6484
     },
     "out_of_scope": {
-      "n": 4,
+      "n": 0,
       "recall": 0.0,
       "mrr": 0.0,
       "ndcg": 0.0
     },
     "term": {
       "n": 18,
-      "recall": 1.0,
-      "mrr": 0.963,
-      "ndcg": 0.9395
+      "recall": 0.8333,
+      "mrr": 0.5361,
+      "ndcg": 0.5973
     },
     "validity": {
       "n": 2,
-      "recall": 1.0,
-      "mrr": 0.625,
-      "ndcg": 0.7153
+      "recall": 0.5,
+      "mrr": 0.1667,
+      "ndcg": 0.25
     }
   },
+  "stale_comparison": {
+    "purpose": "时效过滤的对照证据 —— 同一份向量, 只改 ENABLE_VALIDITY_FILTER。",
+    "off_source_report": "data/eval/reports/run-direct-20261015-105237.json",
+    "on": {
+      "stale_ratio_at_k": 0.0,
+      "questions_with_stale": 0,
+      "recall_at_k": 0.8056,
+      "precision_at_k": 0.2,
+      "ndcg_at_k": 0.5796
+    },
+    "off": {
+      "stale_ratio_at_k": 0.2722,
+      "questions_with_stale": 32,
+      "recall_at_k": 0.8056,
+      "precision_at_k": 0.3278,
+      "ndcg_at_k": 0.5914
+    },
+    "note": "关过滤时 precision 反而更高, 那是因为评分只比条文号、不分版本, 旧版命中被算成了相关结果 —— 不是真的更准。"
+  },
   "refusal_gate": {
-    "source_report": "data/eval/reports/run-gate-20260921-123447.json",
+    "source_report": "data/eval/reports/run-gate-20261015-105743.json",
     "judge": "向量检索最高原始相似度(不依赖重排器/LLM)",
     "thresholds": {
-      "reject": 0.24,
-      "caution": 0.28
+      "reject": 0.345,
+      "caution": 0.36
     },
-    "hard_refusal_accuracy": 0.5,
+    "hard_refusal_accuracy": 1.0,
     "flagged_rate_out_of_scope": 1.0,
     "false_refusal_rate": 0.0,
-    "false_low_confidence_rate": 0.027777777777777776,
-    "note": "硬拒答 2/4, 另 2 条降级为低置信提示 => 超纲题 4/4 都得到了某种警示, 且库内问题零误杀。阈值由 scripts/calibrate_domain_gate.py 标定; 超纲样本仅 4 条, 扩大评测集后必须重标。",
-    "before_fix": 0.0
+    "false_low_confidence_rate": 0.05555555555555555,
+    "note": "2026-10-15 重标: 嵌入内容不再混入元数据后分数分布整体上移, 旧阈值 0.26/0.30 作废(硬拒答一度 0/16)。新分布 库内 min=0.3504 / 超纲 max=0.3399, 两分布不再重叠但只隔 0.0105; 取空档中点 0.345。实测 硬拒答 16/16、有警示 16/16、误杀 0/36、库内低置信 2/36。",
+    "fragility": "余量仅 0.0105。语料/评测集/嵌入模型任一变化都必须重跑 scripts/calibrate_domain_gate.py; 长期方案是改相对判据(见 09 §六 第 10 条)。"
   }
 }
