@@ -56,8 +56,13 @@ class ParsedSection:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_metadata(self) -> dict[str, Any]:
-        """转成可以写进向量库元数据的扁平字典(去掉 None)。"""
-        meta: dict[str, Any] = {"seq": self.seq}
+        """转成可以写进向量库元数据的扁平字典(去掉 None)。
+
+        故意不含 `seq`: 顺序号以契约字段 `section_seq` 落库(见 nodes.py)。
+        早先这里多带一份 `seq`, 它不在任何字段清单里, 却会被 llama-index
+        当成元数据拼进待嵌入文本, 把向量带偏(2026-10-15 发现并移除)。
+        """
+        meta: dict[str, Any] = {}
         for key, value in (
             ("article_no", self.article_no),
             ("article_no_norm", self.article_no_norm),

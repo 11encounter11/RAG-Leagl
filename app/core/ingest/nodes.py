@@ -24,6 +24,7 @@ from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
 
 from app.core.ingest.base import IngestResult, ParsedSection
 from app.core.ingest.metadata import (
+    EMBED_EXCLUDED_FIELDS,
     REQUIRED_CHUNK_FIELDS,
     build_document_metadata,
     missing_required_fields,
@@ -127,6 +128,13 @@ def build_text_nodes(
         # 注意: ref_doc_id 在 llama-index 里是只读属性(由 node 关系推导),
         # 当作构造参数传进去会被静默忽略 —— 必须设置 SOURCE 关系。
         node = TextNode(text=text, metadata=_sanitize(metadata))
+        # 元数据一律不进 embedding —— 否则元数据会占掉嵌入内容的 8 成以上，
+        # 把同法条文的向量拉近。理由与实测数字见 metadata.EMBED_EXCLUDED_FIELDS 的注释。
+        # 取"契约清单 ∪ 节点上实际出现的键": 清单漏了某个字段也不会污染向量
+        # (曾被漏掉的 `seq` 就是这么混进去的)。
+        node.excluded_embed_metadata_keys = sorted(
+            set(EMBED_EXCLUDED_FIELDS) | set(node.metadata)
+        )
         document_id = metadata.get("document_id")
         if document_id:
             node.relationships[NodeRelationship.SOURCE] = RelatedNodeInfo(

@@ -165,6 +165,36 @@ MILVUS_SCALAR_FIELDS: dict[str, str] = {
 MILVUS_RESERVED_FIELDS: tuple[str, ...] = ("id", "doc_id", "text", "embedding")
 
 
+# ---- 不进 embedding 的字段 ----
+#
+# 为什么需要它（2026-10-15 发现）:
+#   llama-index 的 `TextNode.get_content(metadata_mode=EMBED)` 默认会把**全部元数据**
+#   拼进待嵌入文本。实测后果:
+#       node.text  = 72 字  (结构前缀 + 法条正文)
+#       实际嵌入   = 577 字  -> 元数据占 88%
+#       全体 chunk 平均: 正文只占嵌入内容的 17%
+#   于是"决定向量的是元数据, 而不是法条正文"。三个具体害处:
+#     1. 同一部法的每条 chunk 都带相同的 law_name / filename / source_file ——
+#        这些相同字段占了八成篇幅, 把同法条文的向量拉得极近, 互相更难区分
+#        (对应 06 报告里记的"第二十五条与第二十六条向量空间极近")。
+#     2. document_id(UUID)/ source_file(本地路径)/ seq / part_index 是纯噪声,
+#        对"这条法条讲什么"毫无贡献, 却在稀释正文。
+#     3. 与设计意图不符: 02-设计文档 §4.4 写的是"拼接**结构前缀**后再向量化" ——
+#        前缀已经在 node.text 里了, 元数据再嵌一遍纯属重复。
+#
+# 所以: 嵌入内容 = node.text(结构前缀 + 正文), 元数据一律不进。
+#
+# 取"全部声明字段"而不是手写一份黑名单: 以后往契约里加字段时, 它自动被排除,
+# 不会出现"新加的元数据悄悄污染了向量"这种事。
+EMBED_EXCLUDED_FIELDS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        list(REQUIRED_CHUNK_FIELDS)
+        + list(OPTIONAL_STRUCTURE_FIELDS)
+        + list(MILVUS_SCALAR_FIELDS)
+    )
+)
+
+
 def scalar_default(field_type: str) -> Any:
     """标量字段的默认值。Milvus 的字段默认不可为 NULL, 缺了会被拒。"""
     if field_type == "INT64":
