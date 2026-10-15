@@ -16,6 +16,13 @@ from __future__ import annotations
 import math
 from typing import Iterable, List, Sequence
 
+# 与 app/core/ingest/metadata.VALIDITY_EFFECTIVE 必须一致。
+# 这里不 import 那个常量, 是因为 `import app.core.ingest.metadata` 会先执行
+# `app/core/ingest/__init__.py`, 把 llama-index 整个拉进来 —— 本模块刻意保持
+# 零重依赖(纯函数, 可单独测)。两处会不会漂移由测试盯着:
+# tests/test_eval.py::test_stale_ratio_agrees_with_metadata_constant
+EFFECTIVE_STATUS = "effective"
+
 
 def grade_of(article_no: str, required: Sequence[str], acceptable: Sequence[str]) -> int:
     """把一条召回结果映射成相关性分档。"""
@@ -118,6 +125,31 @@ def precision_at_k(grades: Sequence[int], k: int) -> float:
     return sum(1 for grade in window if grade > 0) / len(window)
 
 
+def stale_ratio_at_k(statuses: Sequence[str | None], k: int) -> float:
+    """旧版混入率: top-k 里"非现行有效"片段所占比例。
+
+    为什么必须单独有这个指标(2026-10-15 补):
+        时效过滤的价值是"不引用已修订/已废止的条文", 而不是"召回率更高"。
+        拿召回率衡量它, 甚至会得出相反的结论 —— 开了过滤指标反而下降,
+        因为 ground truth 只写"第X条"、不区分版本, 靠旧版本命中也被算对。
+        这个指标直接数混进来的旧版本: 开过滤应当为 0, 关过滤应当 > 0。
+        它才是 T-28"开关对照"可以量化的证据。
+
+    判据: 只要 `validity_status` 不是 `effective` 就算混入 ——
+    amended / repealed / pending 显然算, **空值也算**: 无法证明它是现行版本时,
+    在"回答可信"这件事上和旧版一样危险, 不该被悄悄放过。
+
+    分母是**实际取到的**片段数(不足 k 时按实际算), 不是固定 k:
+    少召回和召回到旧版是两个问题, 按固定 k 算会让前者冒充后者。
+    """
+    if k <= 0:
+        raise ValueError("k 必须为正整数")
+    window = list(statuses[:k])
+    if not window:
+        return 0.0
+    return sum(1 for status in window if status != EFFECTIVE_STATUS) / len(window)
+
+
 def aggregate(per_question: List[dict], k: int) -> dict:
     """把逐题结果聚合成总体指标。
 
@@ -141,6 +173,9 @@ def aggregate(per_question: List[dict], k: int) -> dict:
         "mrr": mean([item["rr"] for item in resolvable]),
         "ndcg_at_k": mean([item["ndcg"] for item in resolvable]),
         "precision_at_k": mean([item["precision"] for item in resolvable]),
+        # 时效过滤的专用指标: 见 stale_ratio_at_k 的说明
+        "stale_ratio_at_k": mean([item["stale_ratio"] for item in resolvable]),
+        "questions_with_stale": sum(1 for item in resolvable if item["stale_ratio"] > 0),
         # 超纲题: 检索返回空才算通过
         "refusal_accuracy": mean([item["refused"] for item in unresolvable]),
     }

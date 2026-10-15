@@ -42,6 +42,7 @@ from app.core.eval import (  # noqa: E402
     recall_at_k,
     reciprocal_rank,
     report_by_kind,
+    stale_ratio_at_k,
     validate_dataset,
 )
 from app.core.eval.metrics import full_recall_at_k  # noqa: E402
@@ -121,6 +122,7 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
     print(
         f"检索配置: 重排={'开' if settings.ENABLE_RERANK else '关'} "
         f"Query改写={'开' if settings.ENABLE_QUERY_REWRITE else '关'} "
+        f"时效过滤={'开' if settings.ENABLE_VALIDITY_FILTER else '关'} "
         f"BM25语料={rag_service._retriever.bm25_size} 条"
     )
 
@@ -151,6 +153,11 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
             _short_ref((node.node.metadata or {}).get("law_name"), (node.node.metadata or {}).get("article_no"))
             for node in nodes[:top_k]
         ]
+        # 时效过滤的专用观测量: top-k 里混进了多少"非现行有效"片段。
+        # 它和召回率是两个独立维度 —— 详见 metrics.stale_ratio_at_k。
+        retrieved_status = [
+            (node.node.metadata or {}).get("validity_status", "") for node in nodes[:top_k]
+        ]
 
         per_question.append(
             {
@@ -159,12 +166,14 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 "question": case.question,
                 "resolvable": case.resolvable,
                 "retrieved_articles": top_article_nos,
+                "retrieved_status": retrieved_status,
                 "grades": grades,
                 "recall": recall_at_k(grades, top_k),
                 "full_recall": full_recall_at_k(grades, top_k, len(case.required)),
                 "rr": reciprocal_rank(grades),
                 "ndcg": ndcg_at_k(grades, top_k),
                 "precision": precision_at_k(grades, top_k),
+                "stale_ratio": stale_ratio_at_k(retrieved_status, top_k),
                 "refused": 1.0 if refused else 0.0,
                 "latency_ms": None,
             }
@@ -182,6 +191,10 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
     print(f"  MRR              : {overall['mrr']:.4f}")
     print(f"  NDCG@{top_k}       : {overall['ndcg_at_k']:.4f}")
     print(f"  精确率@{top_k}      : {overall['precision_at_k']:.4f}")
+    print(
+        f"  旧版混入率@{top_k}  : {overall['stale_ratio_at_k']:.4f}"
+        f"   (混入旧版的问题 {overall['questions_with_stale']}/{overall['resolvable_count']})"
+    )
     print(f"  超纲题拒答准确率 : {overall['refusal_accuracy']:.4f}")
     print("-" * 68)
     print("分类别:")
@@ -208,6 +221,10 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 "timestamp": stamp,
                 "mode": mode,
                 "top_k": top_k,
+                # 报告必须自带配置留痕: 否则过两天回头看这份 JSON,
+                # 根本分不清它是开过滤还是关过滤跑出来的。
+                "validity_filter": settings.ENABLE_VALIDITY_FILTER,
+                "rerank": settings.ENABLE_RERANK,
                 "overall": overall,
                 "by_kind": by_kind,
                 "per_question": per_question,

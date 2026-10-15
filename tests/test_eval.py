@@ -23,6 +23,7 @@ from app.core.eval.metrics import (
     recall_at_k,
     reciprocal_rank,
     report_by_kind,
+    stale_ratio_at_k,
 )
 
 # ============================================================
@@ -155,9 +156,67 @@ def test_metrics_reject_non_positive_k():
 
 
 # ============================================================
+# 旧版混入率(时效过滤的专用尺子)
+# ============================================================
+def test_stale_ratio_counts_non_effective_statuses():
+    statuses = ["effective", "amended", "effective", "effective"]
+    assert stale_ratio_at_k(statuses, 4) == pytest.approx(0.25)
+
+
+def test_stale_ratio_is_zero_when_all_effective():
+    """开时效过滤时应当恒为 0 —— 这正是 T-28 要拿到的对照证据。"""
+    assert stale_ratio_at_k(["effective"] * 5, 5) == 0.0
+
+
+def test_stale_ratio_treats_unknown_status_as_stale():
+    """不知道是不是现行版本, 算混入。
+
+    空值若被算成 clean, 元数据缺失就会伪装成"过滤效果很好"。
+    这个口径与 01-需求文档 F3.2 一致: 缺 validity_status 的后果就是
+    "可能引用已废止条文"。
+    """
+    assert stale_ratio_at_k(["effective", "", None], 3) == pytest.approx(2 / 3)
+
+
+def test_stale_ratio_counts_repealed_and_pending():
+    assert stale_ratio_at_k(["repealed", "pending"], 2) == pytest.approx(1.0)
+
+
+def test_stale_ratio_denominator_is_actual_window():
+    """分母按实际取到的条数 —— 少召回不该冒充"混入旧版"。"""
+    assert stale_ratio_at_k(["amended"], 5) == pytest.approx(1.0)
+    assert stale_ratio_at_k(["effective"], 5) == 0.0
+    assert stale_ratio_at_k([], 5) == 0.0
+
+
+def test_stale_ratio_only_looks_at_top_k():
+    """第 6 位的旧版本不在展示窗口里, 不该计入。"""
+    statuses = ["effective"] * 5 + ["amended"]
+    assert stale_ratio_at_k(statuses, 5) == 0.0
+
+
+def test_stale_ratio_rejects_non_positive_k():
+    with pytest.raises(ValueError):
+        stale_ratio_at_k(["effective"], 0)
+
+
+def test_stale_ratio_agrees_with_metadata_constant():
+    """防漂移: 本模块的 EFFECTIVE_STATUS 必须与元数据契约里的取值一致。
+
+    两处各写一份字符串, 一旦有人改了契约取值(比如改成 "in_force"),
+    这里会红 —— 否则指标会悄悄把"全部现行"读成"全部混入"。
+    """
+    from app.core.eval.metrics import EFFECTIVE_STATUS
+    from app.core.ingest.metadata import VALIDITY_EFFECTIVE
+
+    assert EFFECTIVE_STATUS == VALIDITY_EFFECTIVE
+    assert stale_ratio_at_k([VALIDITY_EFFECTIVE], 1) == 0.0
+
+
+# ============================================================
 # 聚合
 # ============================================================
-def _item(kind, resolvable, recall=1.0, refused=0.0):
+def _item(kind, resolvable, recall=1.0, refused=0.0, stale_ratio=0.0):
     return {
         "kind": kind,
         "resolvable": resolvable,
@@ -166,8 +225,21 @@ def _item(kind, resolvable, recall=1.0, refused=0.0):
         "rr": recall,
         "ndcg": recall,
         "precision": recall,
+        "stale_ratio": stale_ratio,
         "refused": refused,
     }
+
+
+def test_aggregate_reports_stale_ratio_and_question_count():
+    per_question = [
+        _item("term", True, recall=1.0, stale_ratio=0.0),
+        _item("term", True, recall=1.0, stale_ratio=0.4),
+        _item("out_of_scope", False, refused=1.0, stale_ratio=1.0),
+    ]
+    result = aggregate(per_question, k=5)
+    # 超纲题不参与: "混入旧版"是检索质量问题, 与拒答是两回事
+    assert result["stale_ratio_at_k"] == pytest.approx(0.2)
+    assert result["questions_with_stale"] == 1
 
 
 def test_aggregate_excludes_unresolvable_from_recall():
