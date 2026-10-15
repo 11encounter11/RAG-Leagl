@@ -15,7 +15,7 @@ import time
 from typing import AsyncGenerator, Dict, List, Optional
 
 from app.config.settings import settings
-from app.core.generate.citation import verify_citations
+from app.core.generate.citation import verify_citation_existence, verify_citations
 from app.core.generate.prompt import build_system_prompt
 from app.core.llm.router import llm_router
 from app.core.memory.db_store import db_manager
@@ -40,6 +40,22 @@ REFUSAL_MESSAGE = (
 def _chunk_text(text: str, size: int = 24) -> List[str]:
     """把固定文案切成小片, 让拒答在前端也呈现为打字机效果。"""
     return [text[i : i + size] for i in range(0, len(text), size)]
+
+
+# 引用校验失败后的降级标注（T-30）。用常量而不是内联字符串:
+# 文案和测试断言要能对得上, 散在各处改一次漏一次。
+UNVERIFIED_BADGE = (
+    "⚠️ 部分依据未能核验：本次回答中的引用 {citations} 在权威条文表中查不到对应记录。"
+    "该回答仅供参考，请以下方列出的原文为准。"
+)
+
+# 重生成时给模型的反馈。要点是**说清楚哪几个编号有问题、要求怎么改** ——
+# 笼统地说"再检查一遍"等于原样重试, 输出大概率还是同一份。
+CITATION_REPAIR_HINT = (
+    "你上一条回答里的这些引用无法核验：{citations}。\n"
+    "请重新作答，只使用参考资料中确实存在的条文，并用与之对应的 [编号] 标注；"
+    "如果参考资料不足以回答，就直接说明“现有资料中未找到相关依据”，不要保留这些编号。"
+)
 
 
 class ChatService:
@@ -110,29 +126,56 @@ class ChatService:
         return f"{answer}\n\n---\n{note}" if answer else f"\n\n---\n{note}"
 
     @staticmethod
-    def _citation_warning(answer: str, retrieval: Dict) -> str:
-        """引用编号校验(需求 F2.8 / 设计 §6.6 的降级分支)。
+    def _unverifiable_citations(answer: str, sources: List[Dict]) -> List[int]:
+        """编号合法、但条文在权威表 `law_articles` 里查不到的引用编号。
 
-        校验回答里出现的每个 [编号] 都能在本次返回的 sources 里找到对应项 ——
-        能抓住"模型凭编号写了个不存在的引用"(例如只给了 3 条却写 [7])。
-        法条是否真实存在于知识库(需查 law_articles)属 P1, 见 02 §6.6。
+        查表失败时**放行**（返回空列表并记 WARNING），理由与拒答闸门一致：
+        校验组件自己出问题，不该让整个问答挂掉，也不该凭空造出一个"引用有问题"的结论。
+        """
+        try:
+            return verify_citation_existence(
+                answer, sources, exists=db_manager.existing_law_article_ids
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ChatService] 引用存在性校验失败(放行): %s", exc)
+            return []
 
-        返回提示文案; 校验通过或开关关闭时返回空串。
+    @classmethod
+    def _citation_problems(cls, answer: str, retrieval: Dict) -> List[int]:
+        """回答里的引用问题编号（两类合并、去重升序）。通过则为空列表。
+
+        两类问题（需求 F2.8 / 设计 §6.6）：
+
+        1. **编号越界** —— 模型写了个 `[7]`，但本次只返回 3 条来源；
+        2. **权威表里查不到** —— 编号合法，但那条条文在 `law_articles` 里没有
+           （向量库有 chunk、权威表却没有 = 引用无法溯源，属数据不一致）。
+
+        只有第 2 类算"这条引用是真的"，第 1 类只能说明它连来源都没对上。
+        两类一起报，是因为对用户而言"这条依据不可信"是同一件事。
         """
         if not settings.ENABLE_CITATION_VERIFY:
-            return ""
+            return []
         sources = retrieval.get("sources") or []
-        bad = verify_citations(answer, sources)
-        if not bad:
+        problems = set(verify_citations(answer, sources))
+        problems.update(cls._unverifiable_citations(answer, sources))
+        return sorted(problems)
+
+    @classmethod
+    def _citation_warning(
+        cls, answer: str, retrieval: Dict, problems: List[int] = None
+    ) -> str:
+        """引用校验未通过时的提示文案（需求 F2.8 的降级分支）。
+
+        返回提示文案；校验通过或开关关闭时返回空串。
+        流式路径用它做降级输出 —— 见 chat_stream 里为什么不重生成。
+        """
+        if problems is None:
+            problems = cls._citation_problems(answer, retrieval)
+        if not problems:
             return ""
-        shown = "、".join(f"[{i}]" for i in bad)
-        logger.warning(
-            "[ChatService] 引用编号校验未通过: %s 不在本次 %d 条来源中", shown, len(sources)
-        )
-        return (
-            f"⚠️ 提示：本次回答中的引用 {shown} 未能在检索结果中找到对应依据，"
-            f"请以下方列出的原文为准，不要采信这几个编号。"
-        )
+        shown = "、".join(f"[{i}]" for i in problems)
+        logger.warning("[ChatService] 引用校验未通过: %s", shown)
+        return UNVERIFIED_BADGE.format(citations=shown)
 
     def _build_messages(
         self,
@@ -149,6 +192,37 @@ class ChatService:
 
         messages.append({"role": "user", "content": user_message})
         return messages
+
+    async def _generate_checked(self, llm, messages: List[Dict], retrieval: Dict) -> str:
+        """生成答案, 并把引用校验的降级路径走完（T-30）。
+
+        路径: 生成 → 校验 → 有问题就**带反馈重生成一次** → 仍有问题则标注
+        "部分依据未能核验"（不隐瞒，也不丢掉答案）。
+
+        只重试一次是刻意的: 无限重试会变成"用 LLM 掩盖数据问题",
+        而这类问题的正解是去修数据（`law_articles` 缺行），不是让模型多写几遍。
+        """
+        answer = await llm.chat(messages)
+        problems = self._citation_problems(answer, retrieval)
+        if not problems:
+            return answer
+
+        shown = "、".join(f"[{i}]" for i in problems)
+        logger.warning("[ChatService] 引用校验未通过(%s), 带反馈重生成一次", shown)
+
+        repair_messages = list(messages) + [
+            {"role": "user", "content": CITATION_REPAIR_HINT.format(citations=shown)}
+        ]
+        repaired = await llm.chat(repair_messages)
+
+        remaining = self._citation_problems(repaired, retrieval)
+        if not remaining:
+            logger.info("[ChatService] 重生成后引用校验通过")
+            return repaired
+
+        shown = "、".join(f"[{i}]" for i in remaining)
+        logger.error("[ChatService] 重生成后引用仍不可核验: %s —— 降级为标注输出", shown)
+        return f"{repaired}\n\n---\n{UNVERIFIED_BADGE.format(citations=shown)}"
 
     def _persist(
         self, conversation_id: str, message: str, response_text: str, model_name: str
@@ -204,10 +278,8 @@ class ChatService:
         else:
             llm = llm_router.get(model_name)
             messages = self._build_messages(message, retrieval["context"], conversation_id)
-            response_text = self._with_caution(await llm.chat(messages), retrieval)
-            warning = self._citation_warning(response_text, retrieval)
-            if warning:
-                response_text = f"{response_text}\n\n---\n{warning}"
+            response_text = await self._generate_checked(llm, messages, retrieval)
+            response_text = self._with_caution(response_text, retrieval)
 
         message_id = self._persist(conversation_id, message, response_text, model_name)
 
@@ -304,7 +376,12 @@ class ChatService:
                     }
                 )
 
-            # 引用编号校验未通过时, 同样在流末尾追加提示(降级输出, 不中断回答)
+            # 引用校验未通过时在流末尾追加提示(降级输出, 不中断回答)。
+            #
+            # 流式**不做重生成**, 与非流式(`_generate_checked`)有意不一致:
+            # 校验只能等全文生成完才能做, 那时错误引用已经逐字发给用户了 ——
+            # 再吐一份"修正后"的答案, 用户看到的是自相矛盾的两段文字。
+            # 所以流式选择"如实标注", 而不是假装能回滚。
             warning = self._citation_warning(full_response, retrieval)
             if warning:
                 note = f"\n\n---\n{warning}"

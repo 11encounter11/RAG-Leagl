@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, List
 
+from app.core.law_versions import make_article_id
+
 # ---- 编号格式: 只有这一处定义 ----
 CITATION_INDEX_FORMAT = "[{index}]"
 
@@ -64,6 +66,66 @@ def verify_citations(answer: str, sources: Iterable[Any]) -> List[int]:
     """
     total = len(list(sources or []))
     return [i for i in extract_citation_indices(answer) if i < 1 or i > total]
+
+
+def authoritative_article_id(source: dict) -> str | None:
+    """由一条来源算出它在权威条文表（`law_articles`）里的主键。
+
+    主键是确定性的（`make_article_id(version_id, article_no, seq)`），所以这里能
+    从来源的元数据反推出"这条引用该在权威表里对应哪一行"，不需要额外查表字段。
+
+    返回 None 表示**无法核验**：这条片段不属于语料清单里的任何版本
+    （例如用户临时上传的文档，`version_id` 为空）。"无法核验"和"查不到"
+    是两回事，不能混为一谈 —— 见 verify_citation_existence。
+    """
+    source = source or {}
+    version_id = source.get("version_id") or ""
+    if not version_id:
+        return None
+    seq = source.get("section_seq")
+    try:
+        seq_int = int(seq) if seq is not None else 0
+    except (TypeError, ValueError):
+        seq_int = 0
+    return make_article_id(version_id, source.get("article_no") or None, seq_int)
+
+
+def verify_citation_existence(answer: str, sources: Iterable[Any], *, exists) -> List[int]:
+    """校验回答里的每个 `[n]` 指向的条文都能在**权威条文表**里查到（需求 F2.8）。
+
+    返回"查不到"的编号列表（空 = 通过）。`exists` 是注入的查表函数：
+    接收一批条文 ID，返回其中真实存在的那些 —— 这样本函数保持纯逻辑、可脱网测，
+    而"怎么查"留给调用方（生产走 MySQL，测试给个字典）。
+
+    与 `verify_citations` 的分工（两级校验，缺一不可）：
+
+        verify_citations     编号本身是否越界 —— 模型写了个 `[7]` 但只给了 3 条来源
+        本函数               编号合法，但那一条在 `law_articles` 里**根本不存在**
+                             （向量库里有 chunk、权威表里没有 → 引用无法溯源）
+
+    **无法核验的引用不计入失败**：未登记版本的文档查不到出处是必然的，
+    把它判成"引用不存在"会让所有临时上传的文档都报错，反而掩盖真实问题。
+    """
+    source_list = list(sources or [])
+    total = len(source_list)
+
+    # 条文 ID -> 引用它的编号们（多个编号可能指向同一条）
+    wanted: dict[str, List[int]] = {}
+    for index in extract_citation_indices(answer or ""):
+        if index < 1 or index > total:
+            continue  # 越界由 verify_citations 负责, 这里不重复报
+        article_id = authoritative_article_id(source_list[index - 1])
+        if article_id is None:
+            continue
+        wanted.setdefault(article_id, []).append(index)
+
+    if not wanted:
+        return []
+
+    found = set(exists(list(wanted)) or ())
+    missing = [index for article_id, indices in wanted.items() if article_id not in found
+               for index in indices]
+    return sorted(missing)
 
 
 def _meta(node: Any) -> dict:
@@ -154,6 +216,10 @@ def build_sources(nodes: Iterable[Any]) -> List[dict]:
                 "article_no_norm": metadata.get("article_no_norm", 0),
                 "chapter_path": metadata.get("chapter_path", ""),
                 "clause_no": metadata.get("clause_no", ""),
+                # 引用白名单校验（T-29）的钥匙: 由 version_id + article_no + section_seq
+                # 能算出这条来源在 law_articles 里的主键。缺了这两个字段就核验不了。
+                "version_id": metadata.get("version_id", ""),
+                "section_seq": metadata.get("section_seq", 0),
                 "validity_status": metadata.get("validity_status", ""),
                 "validity_label": VALIDITY_LABELS.get(
                     metadata.get("validity_status", ""), ""

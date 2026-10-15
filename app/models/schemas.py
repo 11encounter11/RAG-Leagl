@@ -49,6 +49,9 @@ class SourceInfo(BaseModel):
     article_no_norm: int = 0
     chapter_path: str = ""
     clause_no: str = ""
+    # 引用白名单校验（T-29）用: 与 build_sources 必须同时有这两个字段
+    version_id: str = ""
+    section_seq: int = 0
     validity_status: str = ""
     validity_label: str = ""
     version_label: str = ""

@@ -459,6 +459,26 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def existing_law_article_ids(self, ids) -> set:
+        """这批条文 ID 里，哪些在 `law_articles` 里真实存在（引用白名单校验用，T-29）。
+
+        一次 `IN` 查询而不是逐条 `get`：一次回答里的引用通常 1~5 条，
+        但校验函数签名叫批量，就该真的批量 —— 否则以后接上更多引用时会变成 N 次往返。
+
+        为什么查的是主键而不是 (version_id, article_no) 组合：
+            主键由 `make_article_id` 确定性生成，查主键既最快，又只有一个事实来源
+            （换成组合条件就等于把 ID 规则抄了第二遍，早晚会漂移）。
+        """
+        wanted = [i for i in (ids or []) if i]
+        if not wanted:
+            return set()
+        session = self.get_session()
+        try:
+            rows = session.query(LawArticle.id).filter(LawArticle.id.in_(wanted)).all()
+            return {row[0] for row in rows}
+        finally:
+            session.close()
+
     def law_version_exists(self, version_id: str) -> bool:
         """版本是否已灌种子。
 
