@@ -8,7 +8,7 @@
 {"id": "L08", "question": "女员工在孕期是不是不能被辞退？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十九条"], "acceptable": ["第二十六条", "第六十一条"], "notes": "阻却解除条款，同时涉及孕期劳动保护"}
 {"id": "L09", "question": "我自己想辞职，需要提前多久跟公司说？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十一条"], "acceptable": [], "notes": "劳动者预告解除，三十日"}
 {"id": "L10", "question": "哪些情况下我可以立刻走人，不用提前通知公司？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第三十二条"], "acceptable": [], "notes": "随时通知解除"}
-{"id": "L11", "question": "劳动合同解除或终止后，经济补偿应该怎么给？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十八条"], "acceptable": ["第二十四条", "第二十六条", "第二十七条"], "notes": "经济补偿的适用条件"}
+{"id": "L11", "question": "劳动合同解除或终止后，经济补偿应该怎么给？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动合同法", "required": ["第四十七条"], "acceptable": ["第四十六条", "第五十条"], "notes": "2026-10-15 改判: 原标《劳动法》第二十八条(1994, 只说依照国家有关规定给予经济补偿), 而经济补偿的标准在《劳动合同法》第四十七条(每满一年一个月工资), 适用情形在第四十六条。第四十七条是现行唯一给出'怎么给'的条文。"}
 {"id": "L12", "question": "公司已经三个月没发工资了，这样合法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第五十条"], "acceptable": ["第九十一条"], "notes": "不得克扣或无故拖欠工资"}
 {"id": "L13", "question": "最低工资标准是谁来定的？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十八条"], "acceptable": ["第四十九条"], "notes": "省、自治区、直辖市人民政府规定并报国务院备案"}
 {"id": "L14", "question": "工资分配是不是要同工同酬？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十六条"], "acceptable": [], "notes": "按劳分配、同工同酬"}
@@ -18,14 +18,14 @@
 {"id": "L18", "question": "怀孕七个月以上还能被安排上夜班吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第六十一条"], "acceptable": ["第五十九条", "第六十条"], "notes": "孕期禁忌劳动与夜班限制"}
 {"id": "L19", "question": "公司招了一个十五岁的孩子来上班，违法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十五条"], "acceptable": ["第九十四条"], "notes": "禁止招用未满十六周岁未成年人；罚则见第九十四条"}
 {"id": "L20", "question": "未成年工指的是哪个年龄段的人？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第五十八条"], "acceptable": [], "notes": "年满十六周岁未满十八周岁"}
-{"id": "L21", "question": "公司一直不给我交社保，我该怎么办？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十二条"], "acceptable": ["第一百条"], "notes": "单位与劳动者必须依法参保缴费；不缴的罚则见第一百条"}
+{"id": "L21", "question": "公司一直不给我交社保，我该怎么办？", "kind": "colloquial", "answerable": true, "law": ["中华人民共和国社会保险法", "中华人民共和国劳动法"], "required": ["第六十三条"], "acceptable": ["第七十二条", "第八十六条"], "notes": "2026-10-15 改判: 用户问'我该怎么办', 直接回答处置路径的是《社会保险法》第六十三条(征收机构责令限期缴纳或补足、可划拨/申请强制执行); 缴费义务本身见《劳动法》第七十二条, 列可接受"}
 {"id": "L22", "question": "和公司发生劳动争议，有哪些解决途径？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十七条"], "acceptable": ["第七十九条"], "notes": "调解、仲裁、诉讼，也可协商"}
-{"id": "L23", "question": "申请劳动仲裁有没有时间限制？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十二条"], "acceptable": [], "notes": "六十日内提出书面申请"}
+{"id": "L23", "question": "申请劳动仲裁有没有时间限制？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动争议调解仲裁法", "required": ["第二十七条"], "acceptable": [], "notes": "2026-10-15 改判(实质冲突): 原标《劳动法》第八十二条的'六十日'是 1994 年旧规则, 已被 2008 年施行的《劳动争议调解仲裁法》第二十七条'一年'取代(新法+专门法优于旧的一般法)。旧条不再作为可接受答案 —— 用 60 日回答用户是错误建议。"}
 {"id": "L24", "question": "仲裁结果我不服，接下来还能怎么办？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十三条"], "acceptable": ["第七十七条"], "notes": "十五日内向法院起诉"}
 {"id": "L25", "question": "劳动合同一定要签书面的吗？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十九条"], "acceptable": ["第十六条"], "notes": "应当以书面形式订立；建立劳动关系应当订立劳动合同见第十六条"}
 {"id": "L26", "question": "什么样的劳动合同是无效的？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第十八条"], "acceptable": ["第九十七条"], "notes": "违反法律法规、欺诈威胁订立"}
 {"id": "L27", "question": "在同一个单位连续工作满十年，能要求签无固定期限合同吗？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第二十条"], "acceptable": [], "notes": "连续工作满十年以上，双方同意续延的可订无固定期限合同"}
-{"id": "L28", "question": "受了工伤能享受哪些待遇？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第七十三条"], "acceptable": ["第七十条"], "notes": "因工伤残或患职业病属法定社会保险待遇情形"}
+{"id": "L28", "question": "受了工伤能享受哪些待遇？", "kind": "term", "answerable": true, "law": "工伤保险条例", "required": ["第三十条"], "acceptable": ["第三十三条", "第三十五条"], "notes": "2026-10-15 改判: 《劳动法》第七十三条只列举'因工伤残或患职业病'属于法定待遇情形, 不回答'有哪些待遇'; 具体待遇在《工伤保险条例》(第三十条 工伤医疗待遇 / 第三十三条 停工留薪 / 第三十五条 一至四级伤残待遇)。"}
 {"id": "L29", "question": "工作时间以外被安排干活又不给钱，老板这样合法吗？", "kind": "compound", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十一条"], "acceptable": ["第四十三条", "第四十四条", "第九十条"], "notes": "复合问法：既问加班上限也问加班报酬"}
 {"id": "L30", "question": "工会能替我向公司讨说法吗？", "kind": "colloquial", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第八十八条"], "acceptable": ["第三十条", "第七条"], "notes": "工会监督权与提出意见权"}
 {"id": "L31", "question": "劳动法第四十七条讲了什么？", "kind": "term", "answerable": true, "law": "中华人民共和国劳动法", "required": ["第四十七条"], "acceptable": [], "notes": "条文编号直查，考的是精确定位而非语义相似"}
