@@ -1,9 +1,9 @@
 {
   "stale": false,
-  "created_at": "2026-10-15 10:52:09",
-  "source_report": "data/eval/reports/run-direct-20261015-105209.json",
+  "created_at": "2026-10-16 16:20:26",
+  "source_report": "data/eval/reports/run-direct-20261016-162026.json",
   "purpose": "P1 检索基线。后续任何检索相关改动都必须与这组数字比较, 不低于基线才算通过(门禁 C)。",
-  "caveat": "ground truth 仍有 6 条标准答案锚定在《劳动法》(见 04-P1任务清单 T-21), 复核前 recall 类指标系统性偏低; 另外 ground truth 不区分版本, 所以 precision / NDCG 对'靠旧版命中'照单全收 —— 比较开/关时效过滤请用 stale_ratio_at_k, 不要用这两个。",
+  "caveat": "本组数字是在 T-21 改判后的评测集上测的(L11/L21/L23/L28 四条标准答案已换成现行更权威的那部法)。**但 ground truth 仍不区分版本**, 所以 precision / NDCG 对'靠旧版命中'照单全收 —— 比较开/关时效过滤请用 stale_ratio_at_k, 不要用这两个。",
   "config": {
     "mode": "direct",
     "top_k": 5,
@@ -22,21 +22,34 @@
     "note": "本组数字是在'嵌入内容不再混入元数据'(提交 d444a17)之后重灌的向量上测得的。修前同配置为 Recall 0.7222 / MRR 0.5579 / NDCG 0.5848。"
   },
   "metrics": {
-    "recall_at_k": 0.8056,
-    "full_recall_at_k": 0.7222,
-    "mrr": 0.5222,
-    "ndcg_at_k": 0.5796,
-    "precision_at_k": 0.2,
+    "recall_at_k": 0.8611,
+    "full_recall_at_k": 0.8056,
+    "mrr": 0.5778,
+    "ndcg_at_k": 0.6302,
+    "precision_at_k": 0.2333,
     "stale_ratio_at_k": 0.0,
     "questions_with_stale": 0,
     "refusal_accuracy": 0.0
   },
+  "metrics_delta_vs_previous_baseline": {
+    "previous_source": "data/eval/reports/run-direct-20261015-105209.json (改判**前**的标注)",
+    "recall_at_k": "0.8056 -> 0.8611 (+0.0555)",
+    "full_recall_at_k": "0.7222 -> 0.8056 (+0.0834)",
+    "mrr": "0.5222 -> 0.5778 (+0.0556)",
+    "ndcg_at_k": "0.5796 -> 0.6302 (+0.0506)",
+    "precision_at_k": "0.2000 -> 0.2333 (+0.0333)",
+    "stale_ratio_at_k": "0.0000 -> 0.0000 (持平)",
+    "未命中题数": "7 -> 5",
+    "解释": "涨幅全部来自标注改对, 不是检索变好 —— 同一份向量、同一套代码。L11/L23/L28 三条由'漏检'转为命中(它们本来就被召回了, 是标准答案锚在旧法才判成错的)。",
+    "反例": "L21 改判后**仍未命中**, 且这次检索根本没把《社会保险法》第六十三条捞进前 5。已单独探针定性: 口语化问法下它排第 11(候选池 30 条), 换成法言法语'用人单位不缴纳社会保险费 责令限期缴纳 补缴'则排第 1。所以这是 F2.7(口语化→法律要素映射, P2 未实现)的缺口, 不是标注问题 —— **没有为此回改标注**。"
+  },
   "by_kind": {
     "colloquial": {
       "n": 14,
-      "recall": 0.7857,
-      "mrr": 0.5345,
-      "ndcg": 0.5943
+      "recall": 0.7143,
+      "full_recall": 0.6429,
+      "mrr": 0.4631,
+      "ndcg": 0.5228
     },
     "compound": {
       "n": 2,
@@ -45,16 +58,17 @@
       "ndcg": 0.6484
     },
     "out_of_scope": {
-      "n": 0,
+      "n": 16,
       "recall": 0.0,
       "mrr": 0.0,
       "ndcg": 0.0
     },
     "term": {
       "n": 18,
-      "recall": 0.8333,
-      "mrr": 0.5361,
-      "ndcg": 0.5973
+      "recall": 1.0,
+      "full_recall": 0.9444,
+      "mrr": 0.7028,
+      "ndcg": 0.754
     },
     "validity": {
       "n": 2,
@@ -63,37 +77,46 @@
       "ndcg": 0.25
     }
   },
+  "remaining_misses": [
+    {"id": "L04", "question": "试用期被辞退有经济补偿吗", "note": "召回了劳动合同法第四十七条等, 但未命中该题要求的条文"},
+    {"id": "L05", "question": "什么情况下可以不开提前通知直接开除", "note": "召回集中在劳动合同法第三十七/四十/四十一条"},
+    {"id": "L21", "question": "公司不交社保我该怎么办", "note": "第六十三条排第 11, 口语表述差距所致(见 metrics_delta 的反例说明)"},
+    {"id": "L24", "question": "仲裁结果不服还能怎么办", "note": "召回劳动争议调解仲裁法第四十九条等, 未命中要求条文"},
+    {"id": "L39", "question": "2015 年签的合同现在还有效吗、条款有没有被修订", "note": "validity 类, 2 题只中 1 题 —— 这类题要的是版本维度, 而向量层无法区分版本对"}
+  ],
   "stale_comparison": {
     "purpose": "时效过滤的对照证据 —— 同一份向量, 只改 ENABLE_VALIDITY_FILTER。",
     "off_source_report": "data/eval/reports/run-direct-20261015-105237.json",
     "on": {
+      "measured_at": "2026-10-16 16:20:26",
       "stale_ratio_at_k": 0.0,
       "questions_with_stale": 0,
-      "recall_at_k": 0.8056,
-      "precision_at_k": 0.2,
-      "ndcg_at_k": 0.5796
+      "recall_at_k": 0.8611,
+      "precision_at_k": 0.2333,
+      "ndcg_at_k": 0.6302
     },
     "off": {
+      "measured_at": "2026-10-15 10:52:37",
       "stale_ratio_at_k": 0.2722,
       "questions_with_stale": 32,
       "recall_at_k": 0.8056,
       "precision_at_k": 0.3278,
-      "ndcg_at_k": 0.5914
+      "ndcg_at_k": 0.5914,
+      "warning": "**这组的 recall / precision / ndcg 是改判**前**的标注测出来的, 已与本文件的 on 组不同尺, 不可直接相减。**只有 stale_ratio_at_k 与 questions_with_stale 两项可以跨标注引用** —— 它们数的是召回片段自带的 validity_status, 与标准答案无关。要让 on/off 两组的排序指标同尺, 需再跑一次 ENABLE_VALIDITY_FILTER=false。"
     },
     "note": "关过滤时 precision 反而更高, 那是因为评分只比条文号、不分版本, 旧版命中被算成了相关结果 —— 不是真的更准。"
   },
   "refusal_gate": {
-    "source_report": "data/eval/reports/run-gate-20261015-105743.json",
+    "source_report": "data/eval/reports/run-gate-20261016-162130.json",
     "judge": "向量检索最高原始相似度(不依赖重排器/LLM)",
     "thresholds": {
       "reject": 0.345,
       "caution": 0.36
     },
     "hard_refusal_accuracy": 1.0,
-    "flagged_rate_out_of_scope": 1.0,
     "false_refusal_rate": 0.0,
     "false_low_confidence_rate": 0.05555555555555555,
-    "note": "2026-10-15 重标: 嵌入内容不再混入元数据后分数分布整体上移, 旧阈值 0.26/0.30 作废(硬拒答一度 0/16)。新分布 库内 min=0.3504 / 超纲 max=0.3399, 两分布不再重叠但只隔 0.0105; 取空档中点 0.345。实测 硬拒答 16/16、有警示 16/16、误杀 0/36、库内低置信 2/36。",
-    "fragility": "余量仅 0.0105。语料/评测集/嵌入模型任一变化都必须重跑 scripts/calibrate_domain_gate.py; 长期方案是改相对判据(见 09 §六 第 10 条)。"
+    "note": "2026-10-16 复核: 与 2026-10-15 重标后的结果**完全一致**(超纲 16/16 拦住、库内误杀 0/36、库内低置信 2/36) —— 符合预期, 因为 T-21 只改了标准答案、没改问题文本, 而闸门判的是'属不属于本领域', 与标注无关。⚠️ 旧版本文件里的 flagged_rate_out_of_scope 字段是手加的, `run_eval.py --mode gate` 并不产出它, 故本次不再记录。",
+    "fragility": "余量仅 0.0105。本次重新观察到同一对边界值: 超纲最高 0.3399(L44 医疗事故) / 库内最低 0.3504(L21 社保口语题)。语料/评测集/嵌入模型任一变化都必须重跑 scripts/calibrate_domain_gate.py; 长期方案是改相对判据(见 09 §六 第 10 条)。"
   }
 }
