@@ -3,7 +3,25 @@ LLM 基类 - 定义统一的模型调用接口
 所有模型实现都必须继承此类，保证接口一致
 """
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, List, Dict, Any
+from dataclasses import dataclass
+from typing import AsyncGenerator, List, Dict, Any, Optional, Tuple, Union
+
+
+@dataclass
+class LLMUsage:
+    """一次生成消耗的量（需求 F8.3）。
+
+    刻意**不放在 LLM 实例的属性上**: `llm_router` 只持有一个共享实例(见 router.py),
+    并发问答会互相覆盖, 于是"A 的答案记了 B 的 token"。用量必须跟着这次调用返回。
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+# `chat_stream_with_usage` 的元素: 文本片段, 或流末尾附上的一次用量。
+StreamItem = Union[str, LLMUsage]
 
 
 class BaseLLM(ABC):
@@ -39,6 +57,27 @@ class BaseLLM(ABC):
             逐个 token 的文本片段
         """
         pass
+
+    async def chat_with_usage(
+        self, messages: List[Dict[str, str]], **kwargs
+    ) -> Tuple[str, Optional[LLMUsage]]:
+        """非流式对话, 同时带回本次用量（需求 F8.3 / 落库字段 tokens_used）。
+
+        默认实现退化成 `chat()` + 用量 None —— 没有实现它的适配器不会坏, 也只是
+        拿不到数。**退化必须是显式的 None 而不是 0**: 记 0 会让人以为"这次没花钱",
+        而真实情况是"这个模型没回报用量", 两件事差别很大。
+        """
+        return await self.chat(messages, **kwargs), None
+
+    async def chat_stream_with_usage(
+        self, messages: List[Dict[str, str]], **kwargs
+    ) -> AsyncGenerator[StreamItem, None]:
+        """流式对话, 末尾额外 yield 一个 `LLMUsage`。
+
+        默认实现只转发文本片段、不产出用量, 同上。
+        """
+        async for token in self.chat_stream(messages, **kwargs):
+            yield token
 
     def build_system_prompt(self, context: str = "") -> Dict[str, str]:
         """

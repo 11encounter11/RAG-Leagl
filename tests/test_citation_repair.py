@@ -16,6 +16,7 @@ import asyncio
 import pytest
 
 from app.config.settings import settings
+from app.core.llm.base import LLMUsage
 from app.core.memory.db_store import db_manager
 from app.services.chat_service import (
     CITATION_REPAIR_HINT,
@@ -32,8 +33,13 @@ class _StubLLM:
         self.calls = []
 
     async def chat(self, messages):
+        answer, _ = await self.chat_with_usage(messages)
+        return answer
+
+    async def chat_with_usage(self, messages):
+        """T-31 之后服务层调的是这个。用量给个可辨识的固定值, 便于断言"有没有累加"。"""
         self.calls.append(messages)
-        return self.replies.pop(0)
+        return self.replies.pop(0), LLMUsage(100, 20, 120)
 
 
 def _retrieval(**overrides) -> dict:
@@ -48,9 +54,11 @@ def _retrieval(**overrides) -> dict:
 
 
 def _generate(llm, retrieval, message="被辞退了有补偿吗"):
-    return asyncio.run(
+    """只取答案文本 —— 用量那一路的断言在 tests/test_token_usage.py。"""
+    answer, _tokens_used = asyncio.run(
         chat_service._generate_checked(llm, [{"role": "user", "content": message}], retrieval)
     )
+    return answer
 
 
 # ============================================================
