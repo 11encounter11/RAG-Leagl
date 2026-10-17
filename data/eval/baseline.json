@@ -85,26 +85,30 @@
     {"id": "L39", "question": "2015 年签的合同现在还有效吗、条款有没有被修订", "note": "validity 类, 2 题只中 1 题 —— 这类题要的是版本维度, 而向量层无法区分版本对"}
   ],
   "stale_comparison": {
-    "purpose": "时效过滤的对照证据 —— 同一份向量, 只改 ENABLE_VALIDITY_FILTER。",
-    "off_source_report": "data/eval/reports/run-direct-20261015-105237.json",
+    "purpose": "时效过滤的对照证据 —— 同一份向量、同一把尺子(均为 T-21 改判后的评测集), 只改 ENABLE_VALIDITY_FILTER。",
+    "off_source_report": "data/eval/reports/run-direct-20261017-095627.json",
     "on": {
       "measured_at": "2026-10-16 16:20:26",
       "stale_ratio_at_k": 0.0,
       "questions_with_stale": 0,
       "recall_at_k": 0.8611,
+      "full_recall_at_k": 0.8056,
+      "mrr": 0.5778,
       "precision_at_k": 0.2333,
       "ndcg_at_k": 0.6302
     },
     "off": {
-      "measured_at": "2026-10-15 10:52:37",
+      "measured_at": "2026-10-17 09:56:27",
       "stale_ratio_at_k": 0.2722,
       "questions_with_stale": 32,
-      "recall_at_k": 0.8056,
-      "precision_at_k": 0.3278,
-      "ndcg_at_k": 0.5914,
-      "warning": "**这组的 recall / precision / ndcg 是改判**前**的标注测出来的, 已与本文件的 on 组不同尺, 不可直接相减。**只有 stale_ratio_at_k 与 questions_with_stale 两项可以跨标注引用** —— 它们数的是召回片段自带的 validity_status, 与标准答案无关。要让 on/off 两组的排序指标同尺, 需再跑一次 ENABLE_VALIDITY_FILTER=false。"
+      "recall_at_k": 0.8611,
+      "full_recall_at_k": 0.8056,
+      "mrr": 0.588,
+      "precision_at_k": 0.3556,
+      "ndcg_at_k": 0.6442
     },
-    "note": "关过滤时 precision 反而更高, 那是因为评分只比条文号、不分版本, 旧版命中被算成了相关结果 —— 不是真的更准。"
+    "finding": "**Recall 与完整召回两组完全相同**(0.8611 / 0.8056) —— 印证了当初那句判断: 过滤并没有删掉答案, 每个法条的现行版本都还在。但 OFF 的 precision(0.3556 > 0.2333)、MRR、NDCG **反而更高**, 这不是"更准", 而是尺子不分版本、旧版命中被照单计入相关。同尺重测再次确认:**比较开/关过滤只能看 stale_ratio_at_k 与 questions_with_stale, 不能用 precision / MRR / NDCG。**",
+    "note": "2026-10-17 补跑: 之前 off 那组是 2026-10-15 改判**前**测的, 与 on 组不同尺、不可相减; 现已在同一条标尺下重测并替换。"
   },
   "refusal_gate": {
     "source_report": "data/eval/reports/run-gate-20261016-162130.json",
