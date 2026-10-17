@@ -23,6 +23,11 @@ class FakeRetriever:
     def __init__(self):
         self.calls = []
 
+    @property
+    def rerank_effective(self):
+        """本桩的 `rerank()` 返回的是归一化相关度分(0.95/0.70), 所以阈值该生效。"""
+        return True
+
     def retrieve_raw(self, query):
         self.calls.append(("retrieve_raw", query))
         return [_node("a", "第二十一条 试用期最长不得超过六个月。", 0.9),

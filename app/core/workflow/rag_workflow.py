@@ -33,7 +33,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
 from app.core.llm.router import llm_router
-from app.core.rag.retriever import HybridRetriever
+from app.core.rag.retriever import HybridRetriever, filter_by_similarity_threshold
 
 logger = logging.getLogger(__name__)
 
@@ -266,14 +266,14 @@ def create_rag_workflow():
         reranked = retriever.rerank(
             state["query"], candidates, top_n=max(top_k, settings.RERANK_TOP_N)
         )
-        kept = [node for node in reranked if (node.score or 0.0) >= threshold]
-        if not kept and reranked:
-            logger.warning(
-                "[RAGWorkflow] 阈值 %.3f 过滤掉全部 %d 条候选(最高分 %.4f)",
-                threshold,
-                len(reranked),
-                max((n.score or 0.0) for n in reranked),
-            )
+        # 阈值规则与直连检索共用同一处定义(见 filter_by_similarity_threshold)。
+        # 之前这里自己写了一遍筛选, 漏掉"重排未生效"的防护 —— 重排关闭时分数是
+        # RRF 名次分(第一名也才 0.03), 被 0.5/0.3/0.2 三轮阈值全部误杀, 表现是
+        # **所有正常问题都被静默拒答**, 而直连检索那条路因为有防护一切正常,
+        # 于是离线评测(跑的是直连)完全测不到。2026-10-17 实测确认。
+        kept = filter_by_similarity_threshold(
+            reranked, threshold, scores_are_relevance=retriever.rerank_effective
+        )
 
         final = kept[:top_k]
         return {

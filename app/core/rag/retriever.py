@@ -161,6 +161,50 @@ def tokenize_zh(text: str) -> List[str]:
         return [cleaned[i : i + 2] for i in range(max(len(cleaned) - 1, 1))]
 
 
+def filter_by_similarity_threshold(
+    nodes: List[NodeWithScore], threshold: float, *, scores_are_relevance: bool
+) -> List[NodeWithScore]:
+    """按相似度阈值筛掉片段 —— **这条规则只有这一处定义**。
+
+    为什么要抽出来：同一条判断原先在直连检索（`retrieve()`）里做了防护，
+    而 Agentic 工作流的 `rerank` 节点**另写了一遍且漏了防护**（2026-10-17 实测：
+    重排关闭时所有 in-scope 问题被静默清空 → 一律拒答）。两条路必须共用一份逻辑。
+
+    `scores_are_relevance` 的含义是"手上这些分数能不能拿来和阈值比":
+
+      · 重排器真的跑过 → 分数是归一化相关度(0~1), 阈值有意义;
+      · 重排器被关掉 / 加载失败 / 打分抛异常 → 分数退回 RRF 名次倒数之和
+        (`RRF = Σ 1/(60+rank)`, 两路都第一也才 0.0328), **不是相似度**。
+        这时套阈值会把结果全部误杀, 而且不报错 —— 是最隐蔽的一类 bug。
+
+    阈值本身不是"越高越严"的旋钮: 对名次分而言它没有语义, 降到 0.3、0.2 也一样错。
+    唯一正确的动作是跳过。"只要最好的几条"这件事由 `top_k` 负责, 不靠这里。
+    """
+    if not scores_are_relevance:
+        logger.warning(
+            "[HybridRetriever] 当前分数不是相关度分(重排未启用或未生效), "
+            "跳过相似度阈值(%.3f), 保留全部 %d 条候选",
+            threshold or 0.0,
+            len(nodes),
+        )
+        return nodes
+
+    if not threshold or threshold <= 0:
+        return nodes
+
+    kept = [node for node in nodes if (node.score or 0.0) >= threshold]
+    if not kept and nodes:
+        # 阈值把结果全过滤掉通常是配置问题, 必须留痕才好发现
+        logger.warning(
+            "[HybridRetriever] 阈值 %.3f 过滤掉了全部 %d 条候选(最高分 %.4f), "
+            "请检查阈值语义或重排器分数分布",
+            threshold,
+            len(nodes),
+            max((n.score or 0.0) for n in nodes),
+        )
+    return kept
+
+
 class HybridRetriever:
     """混合检索器: 向量语义召回 + BM25 关键词召回 -> RRF 融合 -> Cross-Encoder 精排。"""
 
@@ -362,6 +406,15 @@ class HybridRetriever:
             return nodes[:top_n]
         return self._rerank(query, nodes, top_n=top_n)
 
+    @property
+    def rerank_effective(self) -> bool:
+        """最近一次 `rerank()` 是否真的产出了相关度分。
+
+        工作流的 `rerank` 节点要靠它决定是否套阈值 —— 否则"重排退化"这个防护
+        就只存在于直连检索那一条路上(2026-10-17 就是这么漏的)。
+        """
+        return bool(self._use_reranker and self._last_rerank_ok)
+
     def retrieve(
         self,
         query: str,
@@ -396,31 +449,10 @@ class HybridRetriever:
 
         reranked = self.rerank(query, fused, top_n=max(top_k, settings.RERANK_TOP_N))
 
-        if not self._last_rerank_ok:
-            # 重排"配置上开着"但**实际没生效**(模型加载失败 / 打分抛异常)。
-            # 这与"重排被关闭"是同一个陷阱, 只是更隐蔽: 一旦在这里照常套阈值,
-            # RRF 分数(0.03 量级)会被 0.1 全部误杀 —— 表现为"系统什么也查不到",
-            # 而日志里只有一行 warning。加载失败在本机是真实场景(内存不足)。
-            logger.warning(
-                "[HybridRetriever] 重排未生效(模型未加载或执行失败), 当前分数为 RRF 原值, "
-                "跳过相似度阈值(%.3f), 直接返回前 %d 条",
-                similarity_threshold,
-                top_k,
-            )
-            return reranked[:top_k]
-
-        if similarity_threshold and similarity_threshold > 0:
-            kept = [node for node in reranked if (node.score or 0.0) >= similarity_threshold]
-            if not kept and reranked:
-                # 阈值把结果全过滤掉通常是配置问题, 必须留痕才好发现
-                logger.warning(
-                    "[HybridRetriever] 阈值 %.3f 过滤掉了全部 %d 条候选(最高分 %.4f), "
-                    "请检查阈值语义或重排器分数分布",
-                    similarity_threshold,
-                    len(reranked),
-                    max((n.score or 0.0) for n in reranked),
-                )
-            reranked = kept
+        # 阈值规则与工作流共用同一处定义(见 filter_by_similarity_threshold)
+        reranked = filter_by_similarity_threshold(
+            reranked, similarity_threshold, scores_are_relevance=self.rerank_effective
+        )
 
         return reranked[:top_k]
 

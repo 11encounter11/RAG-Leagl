@@ -137,7 +137,8 @@ def test_retrieval_info_snapshots_the_switches_in_effect(monkeypatch):
     assert config["rerank"] is True
     assert config["top_k"] == 3
     assert config["model"] == "deepseek-flash"
-    assert config["similarity_threshold"] is None  # 没传就是没传, 不要伪造成默认值
+    # 没传阈值时记的是**实际生效值**(退回服务端标定值), 不是 null —— 留痕不能留个歧义让人猜
+    assert config["similarity_threshold"] == settings.SIMILARITY_THRESHOLD
     # 阈值也要进快照：拒答闸门余量只有 0.0105，事后复盘必须知道当时定在哪
     assert config["domain_score_reject"] == pytest.approx(settings.DOMAIN_SCORE_REJECT)
 

@@ -127,10 +127,14 @@ def build_retrieval_info(
         "config": {
             "model": model_name,
             "top_k": top_k,
-            # 请求可传的截断阈值: 低于它的片段会被丢掉(retriever.py 的
-            # `node.score >= similarity_threshold`)。不记它就无法解释
-            # "这次为什么只回来 2 条" —— 同一问题的召回数会随它变。
-            "similarity_threshold": similarity_threshold,
+            # 请求可传的截断阈值, **记实际生效值**: 没传时检索层会退回服务端标定值
+            # (settings.SIMILARITY_THRESHOLD), 记 null 等于让复盘时猜。
+            # Agentic 模式下重试各轮的阈值另记在 workflow_steps 里。
+            "similarity_threshold": (
+                similarity_threshold
+                if similarity_threshold is not None
+                else settings.SIMILARITY_THRESHOLD
+            ),
             "agentic_rag": settings.ENABLE_AGENTIC_RAG,
             "query_rewrite": settings.ENABLE_QUERY_REWRITE,
             "rerank": settings.ENABLE_RERANK,
@@ -366,7 +370,7 @@ class ChatService:
         model_name: str,
         conversation_id: str = None,
         top_k: int = 5,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: Optional[float] = None,
         use_agentic_rag: bool = True,
     ) -> dict:
         """非流式聊天。"""
@@ -436,7 +440,7 @@ class ChatService:
         model_name: str,
         conversation_id: str = None,
         top_k: int = 5,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: Optional[float] = None,
         use_agentic_rag: bool = True,
     ) -> AsyncGenerator[str, None]:
         """流式聊天(SSE)。"""
