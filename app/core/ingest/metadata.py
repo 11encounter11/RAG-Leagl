@@ -28,6 +28,11 @@ REQUIRED_CHUNK_FIELDS: tuple[str, ...] = (
     "strategy_confidence",
     "structure_detected",
     "validity_status",
+    # 干净原文（去掉检索前缀）。`build_text_nodes` 对**每一段**都无条件写它，
+    # 三类文档类型都有值，所以属于必填而非可选；引用溯源弹窗展示的就是它。
+    # 补进契约之后，「契约字段集 == Milvus 标量声明」这个等式才成立 ——
+    # tests/test_schema_dictionary.py 靠它拦住"加了列没进契约"这类漂移。
+    "display_text",
 )
 
 # 结构类字段(并非所有文档类型都有, 例如 FAQ 没有条文号)
