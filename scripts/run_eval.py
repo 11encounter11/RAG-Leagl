@@ -119,8 +119,36 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
         print("检索器未就绪: 请确认 Milvus 已启动且知识库中已有数据。")
         return 2
 
+    # ---- 重排器: 必须**预加载并确认真的生效**, 不能只看 settings ----
+    #
+    # 原来这里是 preload_reranker=False, 而报告里记的是 `settings.ENABLE_RERANK`
+    # —— 那只是"用户想不想开", 不是"实际开没开"。两者不一致时:
+    #   · 分数退回 RRF 名次分量级(第一名 0.03), 相似度阈值会把它全卡掉;
+    #   · 而报告上写着 rerank=true, 过几天回头看根本不知道这组数是怎么来的。
+    # 加载失败在本机是真实场景(约 0.7 GB 常驻), 所以必须显式区分并大声提示。
+    rerank_requested = bool(settings.ENABLE_RERANK)
+    rerank_effective = False
+    if rerank_requested:
+        rerank_effective = bool(rag_service._retriever.preload_reranker())
+        if not rerank_effective:
+            print(
+                "\n" + "=" * 70
+                + "\n❌ 配置要求开重排(ENABLE_RERANK=true), 但重排器**没能加载**。\n"
+                  "   此时分数是 RRF 名次分而非相关度分, 阈值语义与开重排时完全不同,\n"
+                  "   这组数字**不能**与任何'重排生效'的基线比较。\n"
+                  "   排查: python scripts/probe_reranker.py (会打印加载耗时与失败原因)\n"
+                  "   确实要关重排跑一轮: 显式设 $env:ENABLE_RERANK='false' 再来。\n"
+                + "=" * 70
+            )
+            return 3
+    else:
+        print(
+            "⚠️  本次评测**关闭了重排**: 报告里 rerank_effective=false。\n"
+            "    关闭时相似度阈值不生效(见 retriever 的说明), 与开重排的基线不可直接比较。"
+        )
+
     print(
-        f"检索配置: 重排={'开' if settings.ENABLE_RERANK else '关'} "
+        f"检索配置: 重排={'生效' if rerank_effective else ('配置要求开但加载失败' if rerank_requested else '关')} "
         f"Query改写={'开' if settings.ENABLE_QUERY_REWRITE else '关'} "
         f"时效过滤={'开' if settings.ENABLE_VALIDITY_FILTER else '关'} "
         f"BM25语料={rag_service._retriever.bm25_size} 条"
@@ -225,6 +253,10 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 # 根本分不清它是开过滤还是关过滤跑出来的。
                 "validity_filter": settings.ENABLE_VALIDITY_FILTER,
                 "rerank": settings.ENABLE_RERANK,
+                # 意图与实际分开记: 只记 `rerank`(意图)会让人误以为这组数是
+                # 带着 Cross-Encoder 跑出来的。两者不一致时阈值语义完全不同。
+                "rerank_requested": rerank_requested,
+                "rerank_effective": rerank_effective,
                 "overall": overall,
                 "by_kind": by_kind,
                 "per_question": per_question,
