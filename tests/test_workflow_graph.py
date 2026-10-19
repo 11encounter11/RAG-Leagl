@@ -8,7 +8,8 @@ langgraph 便不注入 RunnableConfig, config.configurable.retriever 恒为 None
 这条测试从编译图入口 ainvoke 跑一遍, 专抓"只有跑起来才暴露"的接线错误。
 """
 import asyncio
-from types import SimpleNamespace
+
+from llama_index.core.schema import NodeWithScore, TextNode
 
 from app.config.settings import settings
 import app.core.workflow.rag_workflow as rw
@@ -16,7 +17,13 @@ from app.core.workflow.rag_workflow import create_rag_workflow, params_for_round
 
 
 def _node(node_id, text, score):
-    return SimpleNamespace(node=SimpleNamespace(node_id=node_id, text=text), score=score)
+    """真节点类型, 不用 SimpleNamespace。
+
+    2026-10-19 改的: 跨查询 RRF 融合会重建 NodeWithScore(node=TextNode), pydantic 要校验
+    node 类型 —— 原来这个桩用 SimpleNamespace 冒充节点, 比真实形状宽松, 于是"融合环节"
+    在这个文件里永远跑不到。改成真类型后它才能起到图级测试该有的作用。
+    """
+    return NodeWithScore(node=TextNode(id_=node_id, text=text), score=score)
 
 
 class FakeRetriever:

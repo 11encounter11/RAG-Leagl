@@ -205,6 +205,37 @@ def filter_by_similarity_threshold(
     return kept
 
 
+def reciprocal_rank_fusion(
+    *retriever_results: List[NodeWithScore], k: int = 60
+) -> List[NodeWithScore]:
+    """RRF(d) = Σ 1 / (k + rank_i(d)) —— **这个算法只有这一处实现**。
+
+    两个使用场景, 必须走同一份代码:
+      1. 单条查询内, 向量路与 BM25 路之间的融合(`retrieve_raw`);
+      2. Agentic 工作流里, **多条查询**(原问题 / 改写句 / 子问题)结果之间的融合
+         —— 场景 2 是 2026-10-19 才接进来的。之前工作流自己写了个"按 node_id
+         保留首次出现"的去重, 等于让第一条查询的名次顺序直接充当合并顺序,
+         **改写带来的名次提升会被整轮丢掉**(实测: 第六十三条在改写句下排第 1,
+         合并后仍按原问题的第 11 名待着, 系统照样拒答)。
+
+    注意: 融合后 score 的含义是"多路排名倒数之和", **不是相似度**。
+    重排会把它替换掉, 所以不要把 RRF 分数当作相关性分使用。
+    """
+    node_scores: dict[str, float] = {}
+    node_map: dict[str, TextNode] = {}
+
+    for results in retriever_results:
+        for rank, node_with_score in enumerate(results):
+            node_id = node_with_score.node.node_id
+            if node_id not in node_scores:
+                node_scores[node_id] = 0.0
+                node_map[node_id] = node_with_score.node
+            node_scores[node_id] += 1.0 / (k + rank + 1)
+
+    ordered = sorted(node_scores.items(), key=lambda item: item[1], reverse=True)
+    return [NodeWithScore(node=node_map[node_id], score=score) for node_id, score in ordered]
+
+
 class HybridRetriever:
     """混合检索器: 向量语义召回 + BM25 关键词召回 -> RRF 融合 -> Cross-Encoder 精排。"""
 
@@ -497,24 +528,8 @@ class HybridRetriever:
         *retriever_results: List[NodeWithScore],
         k: int = 60,
     ) -> List[NodeWithScore]:
-        """RRF(d) = Σ 1 / (k + rank_i(d))
-
-        注意: 融合后 score 的含义是"多路排名倒数之和", **不是相似度**。
-        后续重排会把它替换掉, 所以不要把 RRF 分数当作相关性分使用。
-        """
-        node_scores: dict[str, float] = {}
-        node_map: dict[str, TextNode] = {}
-
-        for results in retriever_results:
-            for rank, node_with_score in enumerate(results):
-                node_id = node_with_score.node.node_id
-                if node_id not in node_scores:
-                    node_scores[node_id] = 0.0
-                    node_map[node_id] = node_with_score.node
-                node_scores[node_id] += 1.0 / (k + rank + 1)
-
-        ordered = sorted(node_scores.items(), key=lambda item: item[1], reverse=True)
-        return [NodeWithScore(node=node_map[node_id], score=score) for node_id, score in ordered]
+        """转发到模块级 `reciprocal_rank_fusion`（算法只有一份，见其说明）。"""
+        return reciprocal_rank_fusion(*retriever_results, k=k)
 
     # ------------------------------------------------------------
     # 重排器

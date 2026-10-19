@@ -33,7 +33,11 @@ from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
 from app.core.llm.router import llm_router
-from app.core.rag.retriever import HybridRetriever, filter_by_similarity_threshold
+from app.core.rag.retriever import (
+    HybridRetriever,
+    filter_by_similarity_threshold,
+    reciprocal_rank_fusion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,24 +192,22 @@ def create_rag_workflow():
                 queries.extend(sub_questions)
                 steps.append("sub_question_split")
 
-        all_nodes: List[Any] = []
-        for one_query in queries:
-            all_nodes.extend(retriever.retrieve_raw(one_query))
+        per_query = [retriever.retrieve_raw(one_query) for one_query in queries]
 
-        # 去重: 按 node_id 保留首次出现。
-        # 刻意不做应用层分数融合 —— 向量与 BM25 的融合(RRF)已经在
-        # retriever.retrieve_raw 内部按"每一路"做过; 不同查询之间谁更相关,
-        # 交给后面统一的重排器判断, 而不是在应用层再拼一个来路不明的分数。
-        seen: set[str] = set()
-        unique_nodes: List[Any] = []
-        for node in all_nodes:
-            node_id = node.node.node_id
-            if node_id not in seen:
-                seen.add(node_id)
-                unique_nodes.append(node)
+        # 跨查询合并: 用与"向量路 + BM25 路"完全相同的 RRF 算法(见 retriever 的说明)。
+        #
+        # 这里原先写的是"按 node_id 保留首次出现", 注释说"不同查询之间谁更相关交给
+        # 重排器判断"。那个假设在两处会破:
+        #   1) 重排器被关掉或加载失败(内存不足) —— 此时合并顺序 = 第一条查询的顺序,
+        #      改写那一整轮的排名信息**全部作废**;
+        #   2) 即使重排器开着, 它过去也是拿**原始口语问题**给候选打分(见下面 rerank),
+        #      等于用效果差的那句去评判为效果好的那句召回的东西。
+        # 实测(2026-10-19, L21 社保题): 《社会保险法》第六十三条在原问题下排第 11、
+        # 在改写句下排第 1, 合并后仍按 11 名待着 → 反思 0.20 → 整条链拒答。
+        unique_nodes = reciprocal_rank_fusion(*per_query)
 
         logger.info(
-            "[RAGWorkflow] 召回完成: %d 路查询, 去重后候选 %d 条, 参数 %s",
+            "[RAGWorkflow] 召回完成: %d 路查询, RRF 合并后候选 %d 条, 参数 %s",
             len(queries),
             len(unique_nodes),
             params,
@@ -236,7 +238,7 @@ def create_rag_workflow():
         score = retriever.vector_top_score(state["query"])
         level = classify_domain(score)
         logger.info(
-            "[RAGWorkflow] 领域判据: score=%.4f -> %s (拒答线 %.2f / 低置信线 %.2f)",
+            "[RAGWorkflow] 领域判据: score=%.4f -> %s (拒答线 %.3f / 低置信线 %.3f)",
             score,
             level,
             settings.DOMAIN_SCORE_REJECT,
@@ -263,8 +265,13 @@ def create_rag_workflow():
                 "workflow_steps": _step(state, "rerank:no_candidates"),
             }
 
+        # 打分的问句: 用**改写后的**那一句(没有改写时退回原句)。
+        # 原先固定用 state["query"] —— 可候选池是按改写句召回来的, 拿原口语句去给它们
+        # 打分, 等于"换一个问题来评判上一句找到的东西", 改写捞回来的高分条文会被
+        # 系统性压低。这与上面合并的修正是同一个病的两半。
+        score_against = state.get("rewritten_query") or state["query"]
         reranked = retriever.rerank(
-            state["query"], candidates, top_n=max(top_k, settings.RERANK_TOP_N)
+            score_against, candidates, top_n=max(top_k, settings.RERANK_TOP_N)
         )
         # 阈值规则与直连检索共用同一处定义(见 filter_by_similarity_threshold)。
         # 之前这里自己写了一遍筛选, 漏掉"重排未生效"的防护 —— 重排关闭时分数是
