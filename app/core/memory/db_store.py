@@ -55,6 +55,10 @@ class Message(Base):
     model_name = Column(String(50), nullable=True, comment="模型名称")
     tokens_used = Column(Integer, default=0, comment="消耗token数")
     retrieval_info = Column(JSON, nullable=True, comment="检索信息")
+    # 耗时(P2-03)。**刻意不用 default=0**: 非流式没有"首 token"概念, 0 会被读成
+    # "快到可以忽略", 而真值是"没这个量" —— 与 tokens_used 的"0 表示确实没调用"区分开。
+    duration_ms = Column(Integer, nullable=True, comment="整次请求耗时(毫秒)")
+    first_token_ms = Column(Integer, nullable=True, comment="首 token 耗时(毫秒, 仅流式)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -277,6 +281,8 @@ class DatabaseManager:
         model_name: str = None,
         tokens_used: int = 0,
         retrieval_info: dict = None,
+        duration_ms: int = None,
+        first_token_ms: int = None,
     ) -> Message:
         """添加消息"""
         session = self.get_session()
@@ -288,6 +294,8 @@ class DatabaseManager:
                 model_name=model_name,
                 tokens_used=tokens_used,
                 retrieval_info=retrieval_info,
+                duration_ms=duration_ms,
+                first_token_ms=first_token_ms,
             )
             session.add(msg)
             session.commit()

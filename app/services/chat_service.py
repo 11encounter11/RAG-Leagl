@@ -333,8 +333,10 @@ class ChatService:
         top_k: int = 5,
         similarity_threshold: float = None,
         tokens_used: int = 0,
+        duration_ms: int = None,
+        first_token_ms: int = None,
     ) -> Optional[int]:
-        """落库。assistant 消息带上本次检索的留痕与用量(T-31)。"""
+        """落库。assistant 消息带上本次检索的留痕、用量与耗时(T-31 / P2-03)。"""
         db_manager.add_message(conversation_id=conversation_id, role="user", content=message)
         saved = db_manager.add_message(
             conversation_id=conversation_id,
@@ -342,6 +344,8 @@ class ChatService:
             content=response_text,
             model_name=model_name,
             tokens_used=tokens_used,
+            duration_ms=duration_ms,
+            first_token_ms=first_token_ms,
             retrieval_info=build_retrieval_info(
                 retrieval or {},
                 model_name=model_name,
@@ -407,6 +411,8 @@ class ChatService:
             top_k,
             similarity_threshold,
             tokens_used,
+            # 非流式没有"首 token"这个量, 不传就是 NULL(不适用), 不许伪造成 0
+            duration_ms=int((time.time() - start_time) * 1000),
         )
 
         await redis_store.append_message(conversation_id, {"role": "user", "content": message})
@@ -444,6 +450,7 @@ class ChatService:
         use_agentic_rag: bool = True,
     ) -> AsyncGenerator[str, None]:
         """流式聊天(SSE)。"""
+        start_time = time.time()
         try:
             conv = self._resolve_conversation(message, model_name, conversation_id)
         except ValueError as exc:
@@ -455,11 +462,17 @@ class ChatService:
         nodes = retrieval["nodes"]
         full_response = ""
         tokens_used = 0
+        # 语义是"首个送达前端的输出片段"，不是"模型吐的第一个字":
+        # 拒答路径根本没调 LLM, 但用户确实在等那段固定文案 —— P95 < 3s 这条
+        # 延迟预算管的是用户感知, 所以这里也测。别让读数据的人以为全是模型耗时。
+        first_token_ms: Optional[int] = None
 
         if retrieval["refused"]:
             logger.info("[ChatService] 依据不足, 流式返回拒答文案(未调用 LLM)")
             for chunk in _chunk_text(REFUSAL_MESSAGE):
                 full_response += chunk
+                if first_token_ms is None:
+                    first_token_ms = int((time.time() - start_time) * 1000)
                 yield await sse_format(
                     {
                         "type": "token",
@@ -479,6 +492,8 @@ class ChatService:
                         tokens_used = _tokens_of(item)
                         continue
                     full_response += item
+                    if first_token_ms is None:
+                        first_token_ms = int((time.time() - start_time) * 1000)
                     yield await sse_format(
                         {
                             "type": "token",
@@ -552,6 +567,8 @@ class ChatService:
             top_k,
             similarity_threshold,
             tokens_used,
+            duration_ms=int((time.time() - start_time) * 1000),
+            first_token_ms=first_token_ms,
         )
         await redis_store.append_message(conversation_id, {"role": "user", "content": message})
         await redis_store.append_message(
