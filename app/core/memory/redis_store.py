@@ -32,9 +32,13 @@ class RedisStore:
         被 cache_set 的吞异常逻辑吃掉, 表现就是"缓存看着接上了却永远不命中"。
         生产(uvicorn 单一长循环)碰不到, 但评测脚本、探针、任何多次 asyncio.run 的
         进程都会踩, 而缓存的价值恰恰要在评测里才用得上。
+
+        `self._loop is None` 代表这个客户端是**外部直接塞进来的**(测试注入假件):
+        那种一律照用不重建 —— 否则"注入坏客户端测降级"的测试会拿着真连接,
+        读的是真的那台 Redis, 断言就随本机有没有起服务而翻脸。
         """
         loop = asyncio.get_running_loop()
-        if self._redis is not None and self._loop is not loop:
+        if self._redis is not None and self._loop is not None and self._loop is not loop:
             stale, self._redis = self._redis, None
             try:
                 await stale.aclose()

@@ -200,6 +200,54 @@ def test_empty_rewrite_is_not_cached(monkeypatch):
     assert calls["n"] == 2, "缓存没存住才对, 两次都该重新问"
 
 
+def test_self_created_client_is_rebuilt_when_the_loop_changes():
+    """缓存要跨 `asyncio.run` 活得下来 —— 评测脚本每题一个新循环。
+
+    redis.asyncio 的连接池绑在创建它的循环上, 换循环再用直接抛
+    `Event loop is closed`; 而 cache_get 把异常当"未命中", 于是**静默地永远不命中**。
+
+    这条不连真的 Redis: `from_url` 是懒连接, 没发命令就不建 socket, 所以脱网也能跑。
+    """
+    from app.core.memory.redis_store import RedisStore
+
+    store = RedisStore()
+
+    async def _first():
+        return await store.get_client()
+
+    client_a = asyncio.run(_first())
+    assert store._loop is not None, "自建的客户端要记下所属循环, 才知道什么时候该换"
+
+    async def _second():
+        return await store.get_client()
+
+    client_b = asyncio.run(_second())
+    assert client_b is not client_a, "换了循环必须重建客户端, 而不是拿旧循环那个"
+
+
+def test_injected_client_is_never_replaced(monkeypatch):
+    """重建只管自己创建的那个。外部塞进来的假件一律照用。
+
+    这条是踩过之后补的: 早先的重建条件不看来源, 于是"注入坏客户端测降级"的测试
+    拿着真连接去读本机 Redis —— 第一次跑绿, 第二次因为上一轮把值写进去了就红。
+    """
+    from app.core.memory.redis_store import RedisStore
+
+    class _Injected:
+        async def get(self, key):  # pragma: no cover - 断言用不到它被调用
+            return None
+
+    store = RedisStore()
+    injected = _Injected()
+    store._redis = injected
+
+    async def _check():
+        return await store.get_client()
+
+    assert asyncio.run(_check()) is injected
+    assert store._loop is None
+
+
 def test_trace_records_the_rewritten_query():
     """留痕里必须能看到"当时到底用哪句话去检索的"。"""
     from app.services.chat_service import build_retrieval_info
