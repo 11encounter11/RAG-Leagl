@@ -119,6 +119,7 @@ class RecordingRetriever:
 
 class RewritingLLM:
     REWRITE_MARK = "改写成更适合在法律"
+    model_name = "stub-rewrite-model"
 
     def __init__(self):
         self.calls = 0
@@ -139,6 +140,20 @@ class _Router:
         return self._llm
 
 
+class _NoCacheRedis:
+    """空缓存假件。
+
+    不拦掉的话, 这几个测试会去读真实 Redis —— 里面存着之前手工跑 L21 时留下的
+    改写结果, 那会让"用哪句改写句检索"变成环境相关, 测试就不再测同一段逻辑了。
+    """
+
+    async def cache_get(self, key):
+        return None
+
+    async def cache_set(self, key, value, ttl=None):
+        return None
+
+
 def _state(query):
     return {
         "query": query, "rewritten_query": "", "hyde_doc": "", "sub_questions": [],
@@ -152,6 +167,7 @@ def _state(query):
 
 def _run(monkeypatch, retriever, llm):
     monkeypatch.setattr(rw, "llm_router", _Router(llm))
+    monkeypatch.setattr(rw, "redis_store", _NoCacheRedis(), raising=True)
     monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", True)
     monkeypatch.setattr(settings, "ENABLE_HYDE", False)
     monkeypatch.setattr(settings, "ENABLE_DOMAIN_GATE", True)

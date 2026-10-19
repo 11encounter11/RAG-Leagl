@@ -477,6 +477,9 @@ class RAGService:
             "context": result.get("context", ""),
             "sources": result.get("sources", []),
             "reranked_docs": result.get("reranked_docs", []),
+            # 改写后的那句要能传出去: 它决定了本次检索实际用的输入。
+            # 以前只在工作流状态里, 外面拿不到 —— 出问题只能自己包一层 LLM 去看。
+            "rewritten_query": result.get("rewritten_query", ""),
             "workflow_steps": result.get("workflow_steps", []),
             "reflection_score": result.get("reflection_score", 0.0),
             "reflection_note": result.get("reflection_note", ""),

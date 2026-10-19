@@ -116,6 +116,9 @@ def build_retrieval_info(
         "schema": RETRIEVAL_INFO_SCHEMA,
         "retrieval_count": len(sources),
         "sources": sources,
+        # 实际用于检索的那句改写结果(直连模式为空串)。没有它, "为什么召回的是这几条"
+        # 就永远差一环 —— 检索的输入本身比结果更容易出问题。
+        "rewritten_query": retrieval.get("rewritten_query") or "",
         "refused": bool(retrieval.get("refused")),
         "refuse_reason": retrieval.get("refuse_reason") or "",
         "domain_score": retrieval.get("domain_score"),
@@ -175,6 +178,7 @@ class ChatService:
                 "nodes": result.get("reranked_docs", []),
                 "context": result.get("context", ""),
                 "sources": result.get("sources", []),
+                "rewritten_query": result.get("rewritten_query", ""),
                 "workflow_steps": result.get("workflow_steps", []),
                 "reflection_score": result.get("reflection_score"),
                 "reflection_note": result.get("reflection_note", ""),
@@ -189,6 +193,8 @@ class ChatService:
             "nodes": nodes,
             "context": context,
             "sources": rag_service.get_sources_info(nodes),
+            # 直连检索不走改写节点 —— 记空串而不是 None, 与"有工作流但没改"区分开
+            "rewritten_query": "",
             "workflow_steps": ["retrieval:direct"],
             "reflection_score": None,
             "reflection_note": "",

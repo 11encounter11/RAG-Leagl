@@ -23,6 +23,7 @@ LangGraph Agentic RAG 工作流
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
 from app.core.llm.router import llm_router
+from app.core.memory.redis_store import redis_store
 from app.core.rag.retriever import (
     HybridRetriever,
     filter_by_similarity_threshold,
@@ -113,6 +115,35 @@ def _get_retriever(config: Optional[dict]) -> HybridRetriever:
     return retriever
 
 
+async def _ask_llm_cached(llm, prompt: str, purpose: str) -> tuple[str, bool]:
+    """问模型一次；同样的输入命中缓存就**不花这次调用**。返回 `(文本, 是否命中)`。
+
+    为什么要缓存改写与拆分（2026-10-19 实测）：这两步的输出决定"拿哪句话去检索"，
+    而模型即使 `temperature=0` 也不保证每次一样 —— 同一句问题改写三次得到三个版本
+    （有的多列一个关键词、有的把"社保征收机构"丢了）。输入不稳定，agentic 路径的
+    评测就没有可比性，门禁"不低于基线"无从判定。
+
+    缓存同时解决另外两件事：同一问题重问不再重复计费；留痕能记下**当时真正用的那句**
+    （原来 `rewritten_query` 连工作流的返回值都不在，排查时只能自己包一层才看得见）。
+
+    只对"工具型调用"用这个函数。生成答案那一步不缓存 —— 那是给用户看的正文，
+    重复返回同一段反而不对，而且它不影响检索。
+    """
+    digest = hashlib.sha1(
+        f"{llm.model_name}|{purpose}|{prompt}".encode("utf-8")
+    ).hexdigest()
+    key = f"llm:{purpose}:{digest}"
+
+    hit = await redis_store.cache_get(key)
+    if isinstance(hit, dict) and isinstance(hit.get("text"), str) and hit["text"].strip():
+        return hit["text"].strip(), True
+
+    text = ((await llm.chat([{"role": "user", "content": prompt}])) or "").strip()
+    if text:
+        await redis_store.cache_set(key, {"text": text})
+    return text, False
+
+
 def _step(state: RAGWorkflowState, name: str) -> List[str]:
     return list(state.get("workflow_steps", [])) + [name]
 
@@ -146,10 +177,12 @@ def create_rag_workflow():
             "4. 如果原问题已经很明确，原样返回即可。\n\n"
             f"原始问题：{query}\n\n改写后："
         )
-        rewritten = await llm.chat([{"role": "user", "content": prompt}])
+        rewritten, from_cache = await _ask_llm_cached(llm, prompt, "query_rewrite")
         return {
-            "rewritten_query": (rewritten or "").strip() or query,
-            "workflow_steps": _step(state, "query_analysis"),
+            "rewritten_query": rewritten or query,
+            # 缓存命中要留痕: 命中时这次问答没有花改写的钱, 但**用的是历史上某次生成的句子**。
+            # 排查时这两件事必须分得开。
+            "workflow_steps": _step(state, "query_analysis:cache" if from_cache else "query_analysis"),
         }
 
     async def generate_hyde(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
@@ -439,7 +472,7 @@ async def _split_question(query: str) -> List[str]:
             "每行一个，不要编号，不要解释。如果它本身只包含一个问题，就原样输出一行。\n\n"
             f"问题：{query}"
         )
-        response = await llm.chat([{"role": "user", "content": prompt}])
+        response, _ = await _ask_llm_cached(llm, prompt, "question_split")
         lines = [line.strip(" -•\t") for line in (response or "").splitlines()]
         return [line for line in lines if line and line != query][:3]
     except Exception as exc:  # noqa: BLE001 - 拆解失败不该让整个请求失败
