@@ -192,6 +192,10 @@ def describe_threshold_gate(
         "candidates": len(nodes),
         "kept": kept,
         "returned": returned,
+        # 评测复盘要能回答"哪条被砍、砍在第几名": 只记条数看不出 L40 那种
+        # "期望条文排第 3 却整批被丢"的情形。分数按重排顺序原样保留。
+        "cut": len(nodes) - kept,
+        "candidate_scores": [round(score, 4) for score in scores],
     }
 
 

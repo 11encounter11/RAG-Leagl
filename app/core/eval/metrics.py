@@ -189,3 +189,48 @@ def report_by_kind(per_question: List[dict], k: int) -> dict:
         kind: aggregate([item for item in per_question if item["kind"] == kind], k)
         for kind in kinds
     }
+
+
+def report_refusal_split(per_question: List[dict]) -> dict:
+    """把"检索质量"与"答/不答"拆开统计。
+
+    为什么必须拆(2026-10-20 P2-01 实测): 工作流一旦拒答就把 reranked_docs
+    清空, 于是 recall 把这题记成 0 —— 端到端 Recall@5 同时混进了"没检到"
+    与"检到了但闸门不放行"两种完全不同的失败。实测 7 道库内题被反思节点
+    拒答, 其中 5 道关掉闸门后 top-5 里有正确答案; 只看端到端召回会把它们
+    误判成检索退步。
+
+    所以 agentic 基线必须同时有两组数:
+        - 端到端(aggregate): 用户实际得到的结果
+        - answered_* : 只统计放行题, 回答"检索本身准不准"
+        - in_scope_refusal_rate: 库内题被误拒的比例, 单独当一条闸门看
+
+    direct 路径没有反思节点, refused 通常只是"阈值后一条不剩"; 同一函数
+    仍可算, 但语义要按路径解释。
+    """
+    resolvable = [item for item in per_question if item.get("resolvable")]
+    refused = [item for item in resolvable if item.get("refused")]
+    answered = [item for item in resolvable if not item.get("refused")]
+
+    def mean(items: List[dict], key: str) -> float:
+        return round(sum(item[key] for item in items) / len(items), 4) if items else 0.0
+
+    refused_by_kind: dict[str, int] = {}
+    for item in refused:
+        kind = item.get("kind", "")
+        refused_by_kind[kind] = refused_by_kind.get(kind, 0) + 1
+
+    return {
+        "resolvable_count": len(resolvable),
+        "answered_count": len(answered),
+        "refused_in_scope": len(refused),
+        "in_scope_refusal_rate": (
+            round(len(refused) / len(resolvable), 4) if resolvable else 0.0
+        ),
+        "refused_ids": [item["id"] for item in refused],
+        "refused_by_kind": refused_by_kind,
+        "answered_recall_at_k": mean(answered, "recall"),
+        "answered_full_recall_at_k": mean(answered, "full_recall"),
+        "answered_mrr": mean(answered, "rr"),
+        "answered_ndcg_at_k": mean(answered, "ndcg"),
+    }

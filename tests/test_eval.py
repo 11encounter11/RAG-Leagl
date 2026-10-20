@@ -23,6 +23,7 @@ from app.core.eval.metrics import (
     recall_at_k,
     reciprocal_rank,
     report_by_kind,
+    report_refusal_split,
     stale_ratio_at_k,
 )
 
@@ -270,6 +271,40 @@ def test_aggregate_on_empty_input_is_zeros():
     result = aggregate([], k=5)
     assert result["recall_at_k"] == 0.0
     assert result["question_count"] == 0
+
+
+def test_refusal_split_separates_gate_loss_from_retrieval_loss():
+    """库内题被拒必须单列, 不能混进召回率冒充检索退步。
+
+    构造: 2 道放行(一成一败) + 2 道被拒(口语/术语各一) + 1 道超纲被拒。
+    端到端召回应为 1/4, 而放行题上的召回应为 1/2 —— 两者差出来的 0.25
+    正是"检到了但没放行"的损失。
+    """
+    per_question = [
+        {**_item("term", True, recall=1.0), "id": "L01"},
+        {**_item("term", True, recall=0.0), "id": "L02"},
+        {**_item("colloquial", True, recall=0.0, refused=1.0), "id": "L03"},
+        {**_item("term", True, recall=0.0, refused=1.0), "id": "L04"},
+        {**_item("out_of_scope", False, recall=0.0, refused=1.0), "id": "L05"},
+    ]
+    result = report_refusal_split(per_question)
+
+    assert result["resolvable_count"] == 4
+    assert result["answered_count"] == 2
+    assert result["refused_in_scope"] == 2
+    assert result["in_scope_refusal_rate"] == pytest.approx(0.5)
+    assert result["refused_ids"] == ["L03", "L04"]
+    assert result["refused_by_kind"] == {"colloquial": 1, "term": 1}
+    assert result["answered_recall_at_k"] == pytest.approx(0.5)
+    assert aggregate(per_question, k=5)["recall_at_k"] == pytest.approx(0.25)
+
+
+def test_refusal_split_on_empty_input_is_zeros():
+    result = report_refusal_split([])
+    assert result["resolvable_count"] == 0
+    assert result["in_scope_refusal_rate"] == 0.0
+    assert result["answered_recall_at_k"] == 0.0
+    assert result["refused_ids"] == []
 
 
 # ============================================================

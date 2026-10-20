@@ -259,6 +259,8 @@ def test_threshold_gate_uses_top1_and_keeps_lower_ranks():
     assert info["applied"] is True
     assert info["top1_score"] > 0.5
     assert info["returned"] == 2
+    assert info["cut"] == 0, "top1 达标整批保留, 没有候选被阈值砍掉"
+    assert len(info["candidate_scores"]) == info["candidates"]
 
 
 def test_rerank_on_returns_top_k_when_top1_passes():
@@ -279,7 +281,11 @@ def test_rerank_on_returns_top_k_when_top1_passes():
 
     rejected = retriever.retrieve("查询", top_k=5, similarity_threshold=0.9)
     assert rejected == [], "top1 自己都不达标时才整批不用"
-    assert retriever.last_threshold_info["returned"] == 0
+    usage = retriever.last_threshold_info
+    assert usage["returned"] == 0
+    assert usage["cut"] == usage["candidates"], "整批拒绝时砍掉数应等于候选数"
+    assert len(usage["candidate_scores"]) == usage["candidates"], \
+        "逐条分数要留下, 事后才能看是哪一条被砍"
 
 
 def test_threshold_skipped_when_reranker_disabled():

@@ -10,9 +10,15 @@
         跑完整检索评测, 输出 Recall@k / MRR / NDCG@k, 结果写入
         data/eval/reports/run-<时间戳>.json。需要基础设施可用。
 
-    python scripts/run_eval.py --top-k 5 --mode agentic
-        评测 Agentic RAG 工作流(会调用 LLM, 有成本)。用于对比"改写+重排"
-        相对纯检索到底有没有增益 —— 没有这个对比, 那些环节就是在白烧钱。
+    python scripts/run_eval.py --top-k 5 --mode agentic [--limit 3]
+        评测 Agentic RAG 工作流。**不生成答案**, 只跑 改写→召回→重排→反思,
+        因此成本是"改写 + 反思(+拆题)"这几次 LLM 调用与查询嵌入, 不是生成答案。
+        --limit 只跑前 N 题, 用于冒烟; 冒烟报告不是基线。
+
+为什么 agentic 要单独一组基线:
+    direct 评测不经过改写、重试与反思节点, 而生产默认走工作流。两条链上的
+    同一处修复, 一组数字动、另一组不动 —— P1 那次"评测全绿但生产全拒答"
+    就是从这个缝里漏过去的(P2-01)。
 
 为什么用"条文号匹配"而不是让 LLM 当裁判:
     LLM 裁判自身不稳定, 而且贵。法条编号是确定性的: 检索片段的元数据里
@@ -42,6 +48,7 @@ from app.core.eval import (  # noqa: E402
     recall_at_k,
     reciprocal_rank,
     report_by_kind,
+    report_refusal_split,
     stale_ratio_at_k,
     validate_dataset,
 )
@@ -108,12 +115,15 @@ def run_check(dataset: str = str(DEFAULT_DATASET)) -> int:
     return 0
 
 
-async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -> int:
-    """执行检索评测。"""
+async def run_eval(
+    top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET), limit: int = 0
+) -> int:
+    """执行检索评测。`limit>0` 时只跑前 N 题, 用于便宜地验证链路。"""
     from app.core.rag.retriever import (
         SIMILARITY_THRESHOLD_RULE,
         SIMILARITY_THRESHOLD_SCALE,
     )
+    from app.core.workflow.rag_workflow import RETRY_PLAN
     from app.services.rag_service import rag_service
 
     # rebuild_bm25=True 是必须的: 否则 BM25 语料为空, 评出来的其实是
@@ -160,6 +170,9 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
     )
 
     cases = load_dataset(dataset)
+    if limit:
+        cases = cases[:limit]
+        print(f"⚠️  只跑前 {len(cases)} 题(冒烟模式), 这组数字不是基线。")
     per_question = []
 
     for case in cases:
@@ -210,15 +223,29 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 "precision": precision_at_k(grades, top_k),
                 "stale_ratio": stale_ratio_at_k(retrieved_status, top_k),
                 "refused": 1.0 if refused else 0.0,
-                # 这一题的阈值闸门实况: top1/保留/实际返回, 以及尺子名。
+                # 每条进入 top_k 的候选重排分, 与 retrieved_articles 一一对应。
+                "retrieved_scores": [
+                    round(float(node.score or 0.0), 4) for node in nodes[:top_k]
+                ],
+                # 这一题的阈值闸门实况: 尺子名/top1/候选/保留/砍掉几条/逐条分数。
                 # 报告只记"阈值=0.1"无法判断它有没有参与、砍掉了什么(P2-20)。
                 "threshold_usage": threshold_usage,
+                # 工作流独有的判定过程: 不改写与重试就无法解释"为什么这题拒答"。
+                # direct 路径没有这些环节, 统一给空值, 保持逐题字段形状一致。
+                "rewritten_query": result.get("rewritten_query", "") if mode == "agentic" else "",
+                "reflection_score": result.get("reflection_score") if mode == "agentic" else None,
+                "retry_count": result.get("retry_count", 0) if mode == "agentic" else 0,
+                "refuse_reason": result.get("refuse_reason", "") if mode == "agentic" else "",
+                "workflow_steps": result.get("workflow_steps", []) if mode == "agentic" else [],
                 "latency_ms": None,
             }
         )
 
     overall = aggregate(per_question, top_k)
     by_kind = report_by_kind(per_question, top_k)
+    # 工作流拒答会把 reranked_docs 清空, 端到端 recall 于是把"检到了但没放行"
+    # 也记成 0。拆出 answered_* 与库内误拒率, 否则检索质量会被闸门掩盖。
+    refusal_split = report_refusal_split(per_question)
 
     print("=" * 68)
     print(f"检索评测结果  mode={mode}  top_k={top_k}")
@@ -241,6 +268,22 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
             f"  {kind:<12} n={stats['question_count']:<3} "
             f"Recall={stats['recall_at_k']:.3f} MRR={stats['mrr']:.3f} NDCG={stats['ndcg_at_k']:.3f}"
         )
+
+    refused_ids = refusal_split["refused_ids"]
+    if refused_ids:
+        print("-" * 68)
+        print(
+            f"库内题被拒: {refusal_split['refused_in_scope']}/"
+            f"{refusal_split['resolvable_count']} "
+            f"= {refusal_split['in_scope_refusal_rate']:.4f}  {refused_ids}"
+        )
+        print(
+            f"  放行题上的检索: Recall@{top_k}={refusal_split['answered_recall_at_k']:.4f} "
+            f"MRR={refusal_split['answered_mrr']:.4f} "
+            f"NDCG@{top_k}={refusal_split['answered_ndcg_at_k']:.4f} "
+            f"(n={refusal_split['answered_count']})"
+        )
+        print("  端到端召回同时混有'没检到'与'检到但未放行', 两条要分开看。")
 
     misses = [item for item in per_question if item["resolvable"] and item["recall"] == 0.0]
     if misses:
@@ -270,8 +313,19 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 "similarity_threshold": settings.SIMILARITY_THRESHOLD,
                 "similarity_threshold_scale": SIMILARITY_THRESHOLD_SCALE,
                 "similarity_threshold_rule": SIMILARITY_THRESHOLD_RULE,
+                # agentic 的判定链由这些开关决定; 不记下来, 两组 agentic 数字
+                # 差在哪就只能靠猜(P2-01)。
+                "query_rewrite": settings.ENABLE_QUERY_REWRITE,
+                "hyde": settings.ENABLE_HYDE,
+                "domain_gate": settings.ENABLE_DOMAIN_GATE,
+                "reflection_threshold": settings.REFLECTION_THRESHOLD,
+                "max_retries": settings.MAX_RETRIES,
+                "retry_plan": RETRY_PLAN,
+                "limit": limit or None,
                 "overall": overall,
                 "by_kind": by_kind,
+                # 端到端指标会掩盖"检到了但反思拒答"的失败; 这组拆开记(P2-01)。
+                "refusal_split": refusal_split,
                 "per_question": per_question,
             },
             ensure_ascii=False,
@@ -388,6 +442,10 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=5, help="评测用的 top_k")
     parser.add_argument("--mode", choices=["direct", "agentic", "gate"], default="direct")
     parser.add_argument("--dataset", default="data/eval/legal_qa_eval.jsonl")
+    parser.add_argument(
+        "--limit", type=int, default=0,
+        help="只跑前 N 题(0=全部), 用于便宜地验证链路; 冒烟结果不能当基线",
+    )
     args = parser.parse_args()
 
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -399,7 +457,7 @@ def main() -> int:
         return run_check(args.dataset)
     if args.mode == "gate":
         return asyncio.run(run_gate_eval(args.dataset))
-    return asyncio.run(run_eval(args.top_k, args.mode, args.dataset))
+    return asyncio.run(run_eval(args.top_k, args.mode, args.dataset, args.limit))
 
 
 if __name__ == "__main__":

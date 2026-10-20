@@ -12,6 +12,7 @@ from app.core.eval.metrics import (
     recall_at_k,
     reciprocal_rank,
     report_by_kind,
+    report_refusal_split,
     stale_ratio_at_k,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "recall_at_k",
     "reciprocal_rank",
     "report_by_kind",
+    "report_refusal_split",
     "stale_ratio_at_k",
 ]
