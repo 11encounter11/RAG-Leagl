@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""查询改写/拆分的结果缓存与留痕测试（2026-10-19）。
+"""查询改写/拆分/反思的结果缓存与留痕测试（2026-10-19/20）。
 
 为什么必须有：改写句决定"拿哪句话去检索"，而实测同一句问题在 `temperature=0` 下
 **三次改写得到三个版本**（有的丢了"社保征收机构"这个关键词）。输入每次都变，
 agentic 路径的评测就没有可比性——门禁"不低于基线"根本没法判。
+反思同理：同一题两次跑出 0.7 / 0.8，分数贴着阈值时"答/不答"会翻（P2-19）。
 
 缓存顺带解决第二件事：以前 `rewritten_query` 连工作流的返回值都不在，
 线上出问题时只能自己包一层 LLM 才看得见它到底写成了什么。现在它进留痕。
@@ -21,6 +22,7 @@ from app.config.settings import settings
 from app.core.workflow.rag_workflow import create_rag_workflow, params_for_round
 
 REWRITE_MARK = "改写成更适合在法律"
+REFLECT_MARK = "请评估下列检索片段是否足以回答用户问题"
 
 
 def _node(nid):
@@ -74,12 +76,16 @@ class CountingLLM:
 
     def __init__(self):
         self.rewrite_calls = 0
+        self.reflect_calls = 0
 
     async def chat(self, messages, **kw):
         prompt = messages[-1]["content"]
         if REWRITE_MARK in prompt:
             self.rewrite_calls += 1
             return "用人单位未依法缴纳社会保险费 补缴 维权途径"
+        if REFLECT_MARK in prompt:
+            self.reflect_calls += 1
+            return '{"analysis": "足够", "confidence": 0.9}'
         return '{"analysis": "足够", "confidence": 0.9}'
 
 
@@ -102,7 +108,18 @@ def _state(q):
     }
 
 
-def _run(monkeypatch, redis):
+class OtherRetriever(FakeRetriever):
+    """候选正文不同 —— 用来证明反思缓存不是只按问题文本命中的。"""
+
+    def retrieve_raw(self, query, law_name=None):
+        return [_node(f"other{i}") for i in range(6)]
+
+
+def _ids(nodes):
+    return [n.node.node_id for n in nodes]
+
+
+def _run(monkeypatch, redis, retriever=None):
     llm = CountingLLM()
     monkeypatch.setattr(rw, "llm_router", Router(llm))
     monkeypatch.setattr(rw, "redis_store", redis)
@@ -113,7 +130,7 @@ def _run(monkeypatch, redis):
     return llm, asyncio.run(
         create_rag_workflow().ainvoke(
             _state("公司一直不给我交社保怎么办"),
-            config={"configurable": {"retriever": FakeRetriever()}},
+            config={"configurable": {"retriever": retriever or FakeRetriever()}},
         )
     )
 
@@ -143,6 +160,43 @@ def test_different_question_does_not_hit_cache(monkeypatch):
         )
     )
     assert llm.rewrite_calls == 1, "换了问题必须重新改写, 不能拿上一题的结果"
+
+
+def test_second_identical_question_does_not_reask_reflection(monkeypatch):
+    """反思是"答/不答"的判据, 同题重问必须得到同一次判断。
+
+    实测同一道题两次跑出 0.7 / 0.8, 分数贴着阈值时"答还是不答"会翻。
+    输入（问题 + 前三条候选正文与分数）没变就该复用, 顺带省一次调用。
+    """
+    redis = FakeRedis()
+    llm1, result1 = _run(monkeypatch, redis)
+    assert llm1.reflect_calls == 1
+
+    llm2, result2 = _run(monkeypatch, redis)
+    assert llm2.reflect_calls == 0, "候选和问题都没变, 反思不该再花一次调用"
+    assert result1["reflection_score"] == result2["reflection_score"]
+    assert result1["refuse"] == result2["refuse"]
+    assert _ids(result1["reranked_docs"]) == _ids(result2["reranked_docs"]), \
+        "两次拿到的候选要一致, 否则下面的同分断言就没有意义"
+    assert any(step.startswith("reflection(") and ":cache" in step
+               for step in result2["workflow_steps"]), "命中反思缓存要留痕"
+
+
+def test_reflection_cache_is_not_shared_across_different_candidates(monkeypatch):
+    """反思缓存按完整 prompt 命中, 不是只按问题文本。
+
+    同一道题换了候选(检索参数不同/索引更新), 依据变了就必须重新判 ——
+    否则会拿上一批片段得出的"足够"去放行一批完全不同的片段。
+    """
+    redis = FakeRedis()
+    llm1, _ = _run(monkeypatch, redis)
+    assert llm1.reflect_calls == 1
+
+    llm2, result2 = _run(monkeypatch, redis, retriever=OtherRetriever())
+    assert llm2.reflect_calls == 1, "候选正文不同, 反思必须重新问"
+    assert not any(step.startswith("reflection(") and ":cache" in step
+                   for step in result2["workflow_steps"]), "候选变了不许标成缓存命中"
+    assert _ids(result2["reranked_docs"]) == [f"other{i}" for i in range(5)]
 
 
 def test_redis_being_down_does_not_break_the_answer(monkeypatch):
@@ -196,7 +250,8 @@ def test_empty_rewrite_is_not_cached(monkeypatch):
                 config={"configurable": {"retriever": FakeRetriever()}},
             )
         )
-    assert redis.store == {}, "空字符串不该被缓存"
+    assert not any(k.startswith("llm:query_rewrite:") for k in redis.store), \
+        "空字符串不该被缓存"
     assert calls["n"] == 2, "缓存没存住才对, 两次都该重新问"
 
 

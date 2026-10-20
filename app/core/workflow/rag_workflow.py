@@ -392,13 +392,18 @@ def create_rag_workflow():
             '{"analysis": "一句话分析", "confidence": 0.0}\n'
             "confidence 取 0~1：1 表示片段已足够回答问题，0 表示完全不够。"
         )
-        response = await llm.chat([{"role": "user", "content": prompt}])
+        # 反思是"答/不答"的判据，也必须可复现：同题两次实测 0.7 / 0.8，
+        # 接近阈值时结论会翻。输入相同（问题 + 前三条候选正文与分数）就复用
+        # 同一次判断，命中时不再花调用；候选或问题一变，prompt 变、key 变。
+        response, from_cache = await _ask_llm_cached(llm, prompt, "reflection")
         score, note = _parse_reflection(response)
 
         return {
             "reflection_score": score,
             "reflection_note": note,
-            "workflow_steps": _step(state, f"reflection({score:.2f})"),
+            "workflow_steps": _step(
+                state, f"reflection({score:.2f}{':cache' if from_cache else ''})"
+            ),
         }
 
     def decide(state: RAGWorkflowState) -> str:

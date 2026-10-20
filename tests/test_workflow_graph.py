@@ -58,8 +58,20 @@ class FakeRetriever:
 
 
 class _FakeLLM:
+    model_name = "stub-model"   # 反思缓存按 model_name 生成 key
+
     async def chat(self, messages, **kw):
         return '{"analysis": "片段已足够回答", "confidence": 0.9}'
+
+
+class _NoCacheRedis:
+    """反思结果不进真实 Redis: 否则测试结果会随本机缓存里存了什么而变。"""
+
+    async def cache_get(self, key):
+        return None
+
+    async def cache_set(self, key, value, ttl=None):
+        return None
 
 
 class _FakeRouter:
@@ -91,6 +103,7 @@ def _initial_state(query="试用期最长多久"):
 
 def test_compiled_graph_injects_retriever_and_produces_sources(monkeypatch):
     monkeypatch.setattr(rw, "llm_router", _FakeRouter())
+    monkeypatch.setattr(rw, "redis_store", _NoCacheRedis())
     monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", False)
     monkeypatch.setattr(settings, "ENABLE_HYDE", False)
     monkeypatch.setattr(settings, "ENABLE_DOMAIN_GATE", True)

@@ -157,8 +157,18 @@ class _DegradedRetriever:
 
 
 class _ConfidentLLM:
+    model_name = "stub-model"   # 反思缓存按 model_name 生成 key
+
     async def chat(self, messages, **kw):
         return '{"analysis": "片段已足够回答", "confidence": 0.9}'
+
+
+class _NoCacheRedis:
+    async def cache_get(self, key):
+        return None
+
+    async def cache_set(self, key, value, ttl=None):
+        return None
 
 
 class _FakeRouter:
@@ -166,7 +176,8 @@ class _FakeRouter:
         return _ConfidentLLM()
 
 
-def _run_graph(retriever):
+def _run_graph(retriever, monkeypatch):
+    monkeypatch.setattr(rw, "redis_store", _NoCacheRedis())
     state = {
         "query": "被公司辞退了，经济补偿应该怎么算？",
         "rewritten_query": "", "hyde_doc": "", "sub_questions": [],
@@ -190,7 +201,7 @@ def test_workflow_keeps_results_when_rerank_degraded(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_HYDE", False)
     monkeypatch.setattr(settings, "ENABLE_DOMAIN_GATE", True)
 
-    result = _run_graph(_DegradedRetriever())
+    result = _run_graph(_DegradedRetriever(), monkeypatch)
 
     assert not result["refuse"], f"不该拒答: {result.get('refuse_reason')}"
     assert len(result["reranked_docs"]) == 2
@@ -208,12 +219,13 @@ def test_workflow_still_applies_threshold_when_rerank_effective(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_DOMAIN_GATE", True)
 
     degraded_ok = _DegradedRetriever()
-    assert not _run_graph(degraded_ok)["refuse"], "前置检查: 同样的分数, 退化时不该拒答"
+    assert not _run_graph(degraded_ok, monkeypatch)["refuse"], \
+        "前置检查: 同样的分数, 退化时不该拒答"
 
     class _EffectiveRetriever(_DegradedRetriever):
         rerank_effective = True
 
-    result = _run_graph(_EffectiveRetriever())
+    result = _run_graph(_EffectiveRetriever(), monkeypatch)
     assert result["refuse"], "重排生效且 top1 低于阈值时, 阈值仍须能把候选筛空"
 
 
@@ -241,7 +253,7 @@ def test_workflow_returns_top_k_when_top1_passes(monkeypatch):
                 for i, node in enumerate(nodes[:top_n])
             ]
 
-    result = _run_graph(_ManyCandidates())
+    result = _run_graph(_ManyCandidates(), monkeypatch)
 
     assert not result["refuse"], f"不该拒答: {result.get('refuse_reason')}"
     assert len(result["reranked_docs"]) == 5, (
