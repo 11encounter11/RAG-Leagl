@@ -97,8 +97,10 @@ class RecordingRetriever:
 
     def __init__(self):
         self.rerank_queries: list[str] = []
+        self.law_names: list[str] = []
 
-    def retrieve_raw(self, query):
+    def retrieve_raw(self, query, law_name=None):
+        self.law_names.append(law_name if law_name is not None else "")
         if "社会保险法" in query or "补缴" in query:  # 改写句
             return [_node("target", TARGET_ARTICLE)] + [_node(f"w{i}") for i in range(9)]
         return [_node(f"o{i}") for i in range(10)] + [_node("target", TARGET_ARTICLE)]
@@ -129,6 +131,17 @@ class RewritingLLM:
         prompt = messages[-1]["content"]
         if self.REWRITE_MARK in prompt:
             return "用人单位未依法缴纳社会保险费，劳动者能否要求补缴社保、向社保征收机构投诉举报。"
+        return '{"analysis": "片段已足够回答", "confidence": 0.9}'
+
+
+class RewritingToSocialInsuranceLawLLM(RewritingLLM):
+    """改写句里**明确写出另一部法**，用来验证它不会偷偷变成过滤条件。"""
+
+    async def chat(self, messages, **kw):
+        self.calls += 1
+        prompt = messages[-1]["content"]
+        if self.REWRITE_MARK in prompt:
+            return "依据社会保险法，用人单位未依法缴纳社会保险费，劳动者能否要求补缴社保。"
         return '{"analysis": "片段已足够回答", "confidence": 0.9}'
 
 
@@ -165,7 +178,7 @@ def _state(query):
     }
 
 
-def _run(monkeypatch, retriever, llm):
+def _run(monkeypatch, retriever, llm, query="公司一直不给我交社保，我该怎么办？"):
     monkeypatch.setattr(rw, "llm_router", _Router(llm))
     monkeypatch.setattr(rw, "redis_store", _NoCacheRedis(), raising=True)
     monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", True)
@@ -174,7 +187,7 @@ def _run(monkeypatch, retriever, llm):
     monkeypatch.setattr(settings, "ENABLE_RERANK", True)
     return asyncio.run(
         create_rag_workflow().ainvoke(
-            _state("公司一直不给我交社保，我该怎么办？"),
+            _state(query),
             config={"configurable": {"retriever": retriever}},
         )
     )
@@ -200,6 +213,41 @@ def test_rerank_scores_against_rewritten_query_not_original(monkeypatch):
     for q in retriever.rerank_queries:
         assert "公司一直不给我交社保" not in q, "重排仍在用原始口语问题打分"
         assert "社会保险法" in q or "补缴" in q
+
+
+# ============================================================
+# 3) P2-21: 法名过滤只认原问题, 且覆盖所有检索变体
+# ============================================================
+def test_law_named_in_original_query_filters_every_variant(monkeypatch):
+    """原问题点名《劳动法》后, 连改写句也必须带上这个过滤条件。
+
+    桩里的改写句说的是社保 —— 如果让每个变体各自识别法名, 这一路就会去搜
+    《社会保险法》, 把跨法候选重新放回候选池。
+    """
+    retriever = RecordingRetriever()
+    result = _run(monkeypatch, retriever, RewritingLLM(), query="劳动法第四十七条讲了什么？")
+
+    assert len(retriever.law_names) >= 2, "应至少检索原问题与改写句两路"
+    assert set(retriever.law_names) == {"中华人民共和国劳动法"}, (
+        f"有检索变体没带原问题的法名: {retriever.law_names}"
+    )
+    assert any(step.startswith("law_filter") for step in result["workflow_steps"])
+
+
+def test_law_named_only_in_rewrite_does_not_become_filter(monkeypatch):
+    """原问题没点名, 改写句自己冒出《社会保险法》也不许过滤。
+
+    空串在这里是"明确了没点名"的哨兵, 不是"还没判过"。误加过滤会把
+    本来能答的跨法问题搜成空。
+    """
+    retriever = RecordingRetriever()
+    result = _run(monkeypatch, retriever, RewritingToSocialInsuranceLawLLM())
+
+    assert retriever.law_names, "检索节点没被调用"
+    assert set(retriever.law_names) == {""}, (
+        f"改写句里的法名漏进了过滤条件: {retriever.law_names}"
+    )
+    assert not any(step.startswith("law_filter") for step in result["workflow_steps"])
 
 
 def test_workflow_does_not_reimplement_fusion():

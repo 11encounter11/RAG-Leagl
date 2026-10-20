@@ -33,6 +33,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
+from app.core.law_versions import detect_law_name
 from app.core.llm.router import llm_router
 from app.core.memory.redis_store import redis_store
 from app.core.rag.retriever import (
@@ -51,6 +52,8 @@ class RAGWorkflowState(TypedDict, total=False):
 
     query: str
     rewritten_query: str
+    # 原问题里点名的法（规范化后的全称）；空串 = 没点名，不许在改写句上再猜
+    law_name: str
     hyde_doc: str
     sub_questions: List[str]
     retrieved_docs: List[Any]
@@ -166,11 +169,20 @@ def create_rag_workflow():
     # 节点
     # ============================================================
     async def analyze_query(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
-        """查询改写。"""
+        """查询改写 + 法名识别。
+
+        法名只在**原问题**上判一次，写进 state 供后面所有检索变体共用：
+        改写句可能把“劳动法”改没、也可能改出另一部法，让它各自判法名等于
+        给跨法候选开了一条漏网通道（P2-21）。
+        """
         query = state["query"]
+        law_name = detect_law_name(query) or ""
+        logger.info("[RAGWorkflow] 法名识别: %s", f"《{law_name}》" if law_name else "未点名")
+
         if not settings.ENABLE_QUERY_REWRITE:
             return {
                 "rewritten_query": query,
+                "law_name": law_name,
                 "workflow_steps": _step(state, "query_analysis:skipped"),
             }
 
@@ -187,6 +199,7 @@ def create_rag_workflow():
         rewritten, from_cache = await _ask_llm_cached(llm, prompt, "query_rewrite")
         return {
             "rewritten_query": rewritten or query,
+            "law_name": law_name,
             # 缓存命中要留痕: 命中时这次问答没有花改写的钱, 但**用的是历史上某次生成的句子**。
             # 排查时这两件事必须分得开。
             "workflow_steps": _step(state, "query_analysis:cache" if from_cache else "query_analysis"),
@@ -219,6 +232,14 @@ def create_rag_workflow():
         hyde_doc = state.get("hyde_doc") or ""
         steps = ["hybrid_retrieval"]
 
+        # 法名以原问题的结论为准，改写句/子问题一律共用：
+        # 空串是明确的“没点名”，不能当成“还没判过”再自动识别一次 ——
+        # 否则改写句自己冒出一个法名，那一路就会绕过原问题的判断。
+        if "law_name" in state:
+            law_filter = state.get("law_name") or ""
+        else:
+            law_filter = detect_law_name(query) or ""
+
         queries: List[str] = [query]
         if rewritten and rewritten != query:
             queries.append(rewritten)
@@ -232,7 +253,13 @@ def create_rag_workflow():
                 queries.extend(sub_questions)
                 steps.append("sub_question_split")
 
-        per_query = [retriever.retrieve_raw(one_query) for one_query in queries]
+        if law_filter:
+            steps.append(f"law_filter({law_filter})")
+
+        per_query = [
+            retriever.retrieve_raw(one_query, law_name=law_filter)
+            for one_query in queries
+        ]
 
         # 跨查询合并: 用与"向量路 + BM25 路"完全相同的 RRF 算法(见 retriever 的说明)。
         #

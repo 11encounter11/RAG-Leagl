@@ -140,7 +140,7 @@ class _DegradedRetriever:
             NodeWithScore(node=_node("第四十六条 应当支付经济补偿的情形"), score=score),
         ]
 
-    def retrieve_raw(self, query):
+    def retrieve_raw(self, query, law_name=None):
         return list(self.nodes)
 
     def vector_top_score(self, query):

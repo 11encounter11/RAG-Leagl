@@ -20,6 +20,66 @@ from typing import Any, Iterable
 _ID_NAMESPACE = uuid.UUID("6f1b0a4e-0f9a-4a1e-9f0b-2c7d5a3e8b41")
 
 
+# ============================================================
+# 问句里的法名识别（P2-21）
+# ============================================================
+# 键必须与 `data/corpus_manifest.json` 的 `law_name` 完全一致 ——
+# 这个字典里的值会原样进 Milvus 的 `law_name` 过滤表达式，差一个字就查不到。
+# 扩语料时如果忘了在这里补别名，`tests/test_law_versions.py` 会红。
+LAW_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "中华人民共和国劳动法": ("中华人民共和国劳动法", "劳动法"),
+    "中华人民共和国劳动合同法": ("中华人民共和国劳动合同法", "劳动合同法"),
+    "中华人民共和国劳动争议调解仲裁法": (
+        "中华人民共和国劳动争议调解仲裁法",
+        "劳动争议调解仲裁法",
+        "劳动仲裁法",
+    ),
+    "中华人民共和国社会保险法": ("中华人民共和国社会保险法", "社会保险法", "社保法"),
+    "保障农民工工资支付条例": ("保障农民工工资支付条例", "农民工工资支付条例"),
+    "工伤保险条例": ("工伤保险条例",),
+    "职工带薪年休假条例": ("职工带薪年休假条例", "带薪年休假条例", "年休假条例"),
+}
+
+# 长名优先：否则“中华人民共和国劳动合同法”可能被某个较短的同前缀别名截胡。
+_LAW_ALIASES_LONGEST_FIRST = sorted(
+    ((alias, canonical) for canonical, aliases in LAW_NAME_ALIASES.items() for alias in aliases),
+    key=lambda pair: len(pair[0]),
+    reverse=True,
+)
+
+
+def detect_law_name(query: str) -> str | None:
+    """从问句里认出被点名的法；认不出返回 None。
+
+    只认语料里真实存在的法。**宁可漏认，也不误认**：漏认只是退回原来的语义检索，
+    误认会加死一个过滤条件，让本来能答的跨法问题直接搜不到东西。
+
+    两条保守规则：
+      1. 长名优先 —— 全称不会被更短的别名截胡；
+      2. 短名后面紧跟“律 / 法规”时视为泛称（“劳动法律法规”“劳动法规”），
+         不当成《劳动法》。而“劳动法规定……”是“法 + 规定”，仍然认。
+    """
+    text = (query or "").strip()
+    if not text:
+        return None
+
+    for alias, canonical in _LAW_ALIASES_LONGEST_FIRST:
+        start = 0
+        while True:
+            pos = text.find(alias, start)
+            if pos < 0:
+                break
+            rest = text[pos + len(alias):]
+            # “劳动法律法规”“劳动法规”是泛称; “劳动法规定……”是“法 + 规定”, 要认。
+            if alias != canonical and (
+                rest.startswith("律") or (rest.startswith("规") and not rest.startswith("规定"))
+            ):
+                start = pos + len(alias)
+                continue
+            return canonical
+    return None
+
+
 @dataclass(frozen=True)
 class VersionRow:
     """`law_versions` 的一行。字段严格对应 `app/core/memory/db_store.py::LawVersion`。"""

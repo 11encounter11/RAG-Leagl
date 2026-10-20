@@ -457,6 +457,7 @@ class RAGService:
         initial_state: RAGWorkflowState = {
             "query": query,
             "rewritten_query": "",
+            "law_name": "",
             "hyde_doc": "",
             "sub_questions": [],
             "retrieved_docs": [],

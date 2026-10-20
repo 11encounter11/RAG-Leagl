@@ -33,7 +33,7 @@ def _node(nid):
 class FakeRetriever:
     rerank_effective = False
 
-    def retrieve_raw(self, query):
+    def retrieve_raw(self, query, law_name=None):
         return [_node(f"n{i}") for i in range(6)]
 
     def vector_top_score(self, query):

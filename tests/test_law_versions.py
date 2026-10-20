@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from app.core.law_versions import build_version_rows, make_article_id, make_version_id
+from app.core.law_versions import (
+    LAW_NAME_ALIASES,
+    build_version_rows,
+    detect_law_name,
+    make_article_id,
+    make_version_id,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "corpus_manifest.json"
@@ -221,6 +227,41 @@ def test_article_id_falls_back_to_seq_without_article_no():
     a = make_article_id("V-1", None, 1)
     b = make_article_id("V-1", None, 2)
     assert a != b
+
+
+# ============================================================
+# 问句法名识别（P2-21）
+# ============================================================
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("劳动法第四十七条讲了什么？", "中华人民共和国劳动法"),
+        ("《劳动合同法》第三十九条怎么规定的？", "中华人民共和国劳动合同法"),
+        ("社保法关于补缴有什么规定？", "中华人民共和国社会保险法"),
+        ("农民工工资支付条例第十七条", "保障农民工工资支付条例"),
+        ("带薪年休假条例第六条", "职工带薪年休假条例"),
+        ("中华人民共和国劳动争议调解仲裁法第二十七条", "中华人民共和国劳动争议调解仲裁法"),
+        # 泛称不是法名：加了过滤会把跨法问题直接搜空
+        ("劳动法律法规对竞业限制有什么规定？", None),
+        ("劳动法规对加班费怎么规定？", None),
+        # 没有法名 / 只有普通词
+        ("竞业限制的期限是多久？", None),
+        ("合同到期不续签有补偿吗？", None),
+        # “劳动法规定……”是法 + 规定，仍然认
+        ("劳动法规定每天最多工作几个小时？", "中华人民共和国劳动法"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_detect_law_name_is_conservative(query, expected):
+    assert detect_law_name(query) == expected
+
+
+def test_aliases_cover_every_law_in_the_manifest():
+    """扩语料后忘了补别名，过滤就永远只认旧法 —— 这条让漂移立刻红。"""
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    names = {entry["law_name"] for entry in manifest["files"]}
+    assert names == set(LAW_NAME_ALIASES)
 
 
 # ============================================================

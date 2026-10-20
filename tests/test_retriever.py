@@ -395,6 +395,66 @@ def test_passes_filter_predicate(monkeypatch):
     assert retriever.passes_filter({"validity_status": "amended"}) is True
 
 
+def test_law_filter_is_pushed_to_milvus_only_when_named(monkeypatch):
+    """点名某部法时，law_name 必须和时效条件一起下推；没点名时不许加。"""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    retriever, index = _build([NodeWithScore(node=_eff("x"), score=0.9)])
+
+    retriever.retrieve_raw("劳动法第四十七条讲了什么？")
+    pushed = {f.key: f.value for f in index.last_filters.filters}
+    assert pushed == {
+        "validity_status": "effective",
+        "law_name": "中华人民共和国劳动法",
+    }
+
+    retriever.retrieve_raw("竞业限制的期限是多久？")
+    pushed = {f.key: f.value for f in index.last_filters.filters}
+    assert pushed == {"validity_status": "effective"}, "没点名法时不许加 law_name 过滤"
+
+
+def test_explicit_empty_law_name_suppresses_autodetection(monkeypatch):
+    """工作流传空串 = 原问题没点名；改写句里的法名不能反过来变成过滤条件。"""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", False)
+    retriever, index = _build([NodeWithScore(node=_eff("x"), score=0.9)])
+
+    retriever.retrieve_raw("劳动法第四十七条讲了什么？", law_name="")
+    assert index.last_filters is None
+
+
+def test_law_filter_applies_to_bm25_before_top_k(monkeypatch):
+    """BM25 没有查询层，必须在取 top-k 之前把别的法筛掉，否则坑位先被占掉。"""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "ENABLE_VALIDITY_FILTER", True)
+    nodes = [
+        TextNode(
+            text="第四十七条 经济补偿",
+            metadata={
+                "validity_status": "effective",
+                "law_name": "中华人民共和国劳动法",
+            },
+        ),
+        TextNode(
+            text="第四十七条 经济补偿 劳动合同",
+            metadata={
+                "validity_status": "effective",
+                "law_name": "中华人民共和国劳动合同法",
+            },
+        ),
+    ]
+    retriever = HybridRetriever(_StubIndex([]), nodes=nodes, use_reranker=False)
+
+    kept = retriever._bm25_retrieve(
+        "第四十七条", top_k=5, law_name="中华人民共和国劳动法"
+    )
+
+    assert [n.node.metadata["law_name"] for n in kept] == ["中华人民共和国劳动法"]
+
+
 def test_bm25_path_excludes_non_effective_versions(monkeypatch):
     """BM25 是内存索引，没有查询层可下推 —— 必须在取 top-k 之前筛。"""
     from app.config.settings import settings

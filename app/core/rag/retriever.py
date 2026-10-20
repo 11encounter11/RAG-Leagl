@@ -23,6 +23,7 @@ from llama_index.core.schema import MetadataMode, NodeWithScore, TextNode
 from rank_bm25 import BM25L
 
 from app.config.settings import settings
+from app.core.law_versions import detect_law_name
 
 logger = logging.getLogger(__name__)
 
@@ -405,20 +406,35 @@ class HybridRetriever:
             return 0.0
         return float(nodes[0].score or 0.0)
 
-    def retrieve_raw(self, query: str) -> List[NodeWithScore]:
+    def retrieve_raw(
+        self, query: str, law_name: Optional[str] = None
+    ) -> List[NodeWithScore]:
         """只做多路召回 + RRF 融合, **不做重排**。
 
         调用方拿到候选后统一重排一次即可(见 rerank)。
+
+        `law_name` 的三种取值必须分清：
+          · `None`（默认）：从 query 自动识别被点名的法 —— 直连检索走这条；
+          · `""`：明确“这个问题没有点名任何法”，**不许**在改写句/子问题上再猜；
+          · 非空：调用方已经从**原问题**判定好了，所有检索变体共用这一个过滤。
+        第三种是工作流用的：只按原问题判一次，改写句丢了法名也不会漏出跨法候选。
         """
         if not query or not query.strip():
             return []
 
-        vector_nodes = self._vector_retrieve(query)
+        resolved_law = detect_law_name(query) if law_name is None else (law_name or None)
+        if resolved_law:
+            logger.info("[HybridRetriever] 法名过滤: 只搜《%s》", resolved_law)
+
+        vector_nodes = self._vector_retrieve(query, law_name=resolved_law)
         logger.debug("[HybridRetriever] 向量召回 %d 条", len(vector_nodes))
 
         bm25_nodes: List[NodeWithScore] = []
         if self._bm25 is not None:
-            bm25_nodes = self._bm25_retrieve(query, top_k=settings.BM25_TOP_K)
+            # 传 "" 而不是 None：resolved_law 已经是最终结论，BM25 那一路不要再自动识别。
+            bm25_nodes = self._bm25_retrieve(
+                query, top_k=settings.BM25_TOP_K, law_name=resolved_law or ""
+            )
             logger.debug("[HybridRetriever] BM25 召回 %d 条", len(bm25_nodes))
         else:
             logger.warning("[HybridRetriever] BM25 未就绪, 本次仅用向量召回")
@@ -430,10 +446,13 @@ class HybridRetriever:
     # ------------------------------------------------------------
     # 检索层过滤（T-27 / T-28）
     # ------------------------------------------------------------
-    def _filter_conditions(self) -> List[tuple[str, str]]:
+    def _filter_conditions(self, law_name: Optional[str] = None) -> List[tuple[str, str]]:
         """当前生效的元数据过滤条件 `[(字段, 期望值)]` —— **唯一来源**。
 
-        目前只有一条：**排除非现行有效的版本**（需求 F4.2）。
+        两条：
+          1. **排除非现行有效的版本**（需求 F4.2，受 `ENABLE_VALIDITY_FILTER` 控制）；
+          2. **点名某部法时只搜那部法**（P2-21）。`law_name` 为空时**不加** ——
+             问“竞业限制”这类跨法问题时，任何法名过滤都会把另一半答案误伤掉。
 
         为什么必须过滤，而不是让模型自己忽略旧条文：
             语料里同一部法有两个版本（劳动法 2009/2018、社保法 2010/2018），
@@ -451,14 +470,23 @@ class HybridRetriever:
 
         **每次都读 settings 而不是构造时读一次** —— 开关改完立刻生效，不用重启
         （对应需求 F6.3「开关必须在服务端生效且能被验证」）。
-        """
-        if not settings.ENABLE_VALIDITY_FILTER:
-            return []
-        return [("validity_status", "effective")]
 
-    def _build_metadata_filters(self) -> Optional["MetadataFilters"]:
+        `law_name` 由调用方判定，不在这里从 query 再猜一次：工作流用**原问题**
+        判定一次，然后把这个值传给改写句、子问题等所有检索变体 —— 改写句如果
+        自己丢了法名，不能让那一路成为漏网的跨法通道。
+        """
+        conditions: List[tuple[str, str]] = []
+        if settings.ENABLE_VALIDITY_FILTER:
+            conditions.append(("validity_status", "effective"))
+        if law_name:
+            conditions.append(("law_name", law_name))
+        return conditions
+
+    def _build_metadata_filters(
+        self, law_name: Optional[str] = None
+    ) -> Optional["MetadataFilters"]:
         """把过滤条件下推给 Milvus（`MetadataFilters` → `expr`）。"""
-        conditions = self._filter_conditions()
+        conditions = self._filter_conditions(law_name)
         if not conditions:
             return None
         from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
@@ -467,11 +495,16 @@ class HybridRetriever:
             filters=[MetadataFilter(key=key, value=value) for key, value in conditions]
         )
 
-    def passes_filter(self, metadata: dict) -> bool:
+    def passes_filter(self, metadata: dict, law_name: Optional[str] = None) -> bool:
         """内存索引（BM25）那一路用的谓词 —— 与 Milvus 那份条件同源。"""
-        return all(metadata.get(key) == value for key, value in self._filter_conditions())
+        return all(
+            metadata.get(key) == value
+            for key, value in self._filter_conditions(law_name)
+        )
 
-    def _vector_retrieve(self, query: str) -> List[NodeWithScore]:
+    def _vector_retrieve(
+        self, query: str, law_name: Optional[str] = None
+    ) -> List[NodeWithScore]:
         """向量召回（带元数据过滤）。
 
         `as_retriever` 每次调用会新建一个轻量对象（就是这个 retriever 本身），
@@ -479,7 +512,7 @@ class HybridRetriever:
         """
         retriever = self._index.as_retriever(
             similarity_top_k=self._vector_top_k,
-            filters=self._build_metadata_filters(),
+            filters=self._build_metadata_filters(law_name),
         )
         return retriever.retrieve(query)
 
@@ -519,11 +552,13 @@ class HybridRetriever:
         query: str,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
+        law_name: Optional[str] = None,
     ) -> List[NodeWithScore]:
         """完整检索: 召回 -> 重排 -> 阈值闸门 -> top_k 截断。
 
         阈值只判这一批候选的 top1(见 filter_by_similarity_threshold),
         **留几条由 top_k 决定**; 分数是重排归一化后的相关度, 不是余弦相似度。
+        `law_name` 一般不传 —— 传 None 时会从 query 自动识别被点名的法。
         """
         self._last_threshold_info = {}
         if not query or not query.strip():
@@ -536,7 +571,7 @@ class HybridRetriever:
             else similarity_threshold
         )
 
-        fused = self.retrieve_raw(query)
+        fused = self.retrieve_raw(query, law_name=law_name)
         if not fused:
             return []
         if not self._use_reranker:
@@ -582,16 +617,24 @@ class HybridRetriever:
     # ------------------------------------------------------------
     # BM25
     # ------------------------------------------------------------
-    def _bm25_retrieve(self, query: str, top_k: int = 10) -> List[NodeWithScore]:
+    def _bm25_retrieve(
+        self, query: str, top_k: int = 10, law_name: Optional[str] = None
+    ) -> List[NodeWithScore]:
         if self._bm25 is None:
             return []
         scores = self._bm25.get_scores(tokenize_zh(query))
         if len(scores) == 0:
             return []
 
+        # 与 retrieve_raw 同一套语义：None = 自己从 query 认；"" = 明确不筛法名。
+        resolved_law = detect_law_name(query) if law_name is None else (law_name or None)
+
         # 过滤必须在取 top-k **之前**做：内存索引没有查询层可下推，
         # 若等取完 top-k 再筛，坑位已经被过滤掉的条目占住了（见 _filter_conditions 的说明）。
-        eligible = [self.passes_filter(node.metadata or {}) for node in self._nodes]
+        eligible = [
+            self.passes_filter(node.metadata or {}, law_name=resolved_law)
+            for node in self._nodes
+        ]
         if not all(eligible):
             scores = np.where(eligible, scores, -np.inf)
 
