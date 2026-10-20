@@ -38,8 +38,13 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 512
     CHUNK_OVERLAP: int = 50
     TOP_K: int = 5
-    # 作用在重排归一化分上的阈值。0.1 是在 52 题评测集上四组对照标定出来的
-    # (见 07-P0端到端验收与重排收益.md §3), 不是拍的; 必须与 .env 保持一致。
+    # 重排之后的**准入阈值**：只判本批候选的第 1 名，达标就保留、最终条数交给 top_k。
+    # 比的是 Cross-Encoder 归一化后的相关度分（0~1），**不是余弦相似度** ——
+    # 名字是历史包袱（.env/API/前端都叫它 SIMILARITY_THRESHOLD），语义见
+    # retriever.filter_by_similarity_threshold 的说明。
+    # 数值 0.1 来自 2026-09-22 的四组对照（见 07-P0端到端验收与重排收益.md §3），
+    # 但当时语料以《劳动法》107 条为主、切分也不同；现在 7 部法 / 703 条，绝对分的分布已不可比。
+    # 所以它只能当"这一批值不值得答"的粗闸门，不能当每条片段的及格线（P2-20）。
     SIMILARITY_THRESHOLD: float = 0.1
     BM25_TOP_K: int = 10
     RERANK_TOP_N: int = 5

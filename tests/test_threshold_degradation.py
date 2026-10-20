@@ -61,13 +61,18 @@ def test_skips_threshold_when_scores_are_not_relevance():
 
 
 def test_applies_threshold_when_scores_are_relevance():
-    """阴性对照: 别把修复做成"永远不过阈值", 那样 0.5 这道质量把关就消失了。"""
+    """阴性对照: 重排生效时阈值仍能整批拒绝; 但 top1 达标就保留整批(P2-20)。"""
     good = NodeWithScore(node=_node("高相关"), score=0.9)
     bad = NodeWithScore(node=_node("低相关"), score=0.1)
-    kept = filter_by_similarity_threshold(
+
+    assert filter_by_similarity_threshold(
         [good, bad], THRESHOLD, scores_are_relevance=True
-    )
-    assert kept == [good]
+    ) == [good, bad], "top1 达标后, 第 2 名不因绝对分低被砍"
+
+    low = NodeWithScore(node=_node("低相关"), score=0.4)
+    assert filter_by_similarity_threshold(
+        [low, bad], THRESHOLD, scores_are_relevance=True
+    ) == [], "top1 自己都不达标时, 整批不用"
 
 
 def test_no_threshold_keeps_everything():
@@ -195,7 +200,7 @@ def test_workflow_keeps_results_when_rerank_degraded(monkeypatch):
 def test_workflow_still_applies_threshold_when_rerank_effective(monkeypatch):
     """阴性对照: 重排真生效时阈值照常起作用(不能把修复做成"阈值永远不生效")。
 
-    0.9 的相关度分低于阈值 0.5 -> 应当被筛掉 -> 走拒答。
+    本桩给的是 0.0328 的相关度分, 低于第 0 轮阈值 0.1 -> 整批不用 -> 走拒答。
     """
     monkeypatch.setattr(rw, "llm_router", _FakeRouter())
     monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", False)
@@ -209,7 +214,45 @@ def test_workflow_still_applies_threshold_when_rerank_effective(monkeypatch):
         rerank_effective = True
 
     result = _run_graph(_EffectiveRetriever())
-    assert result["refuse"], "重排生效且分数低于阈值时, 阈值仍须能把候选筛空"
+    assert result["refuse"], "重排生效且 top1 低于阈值时, 阈值仍须能把候选筛空"
+
+
+def test_workflow_returns_top_k_when_top1_passes(monkeypatch):
+    """P2-20 验收③(工作流侧): top1 达标时, 不得因第 2~5 名分低而少给条数。"""
+    monkeypatch.setattr(rw, "llm_router", _FakeRouter())
+    monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", False)
+    monkeypatch.setattr(settings, "ENABLE_HYDE", False)
+    monkeypatch.setattr(settings, "ENABLE_DOMAIN_GATE", True)
+
+    class _ManyCandidates(_DegradedRetriever):
+        rerank_effective = True
+
+        def __init__(self):
+            self.nodes = [
+                NodeWithScore(node=_node(f"第四十七条-{i}"), score=0.5)
+                for i in range(6)
+            ]
+
+        def rerank(self, query, nodes, top_n=5):
+            # 工作流的 RRF 会重建节点并覆盖分数, 所以这里必须重新打相关度分:
+            # 第 1 名远高于阈值 0.1, 其余都远低于它 —— 旧实现只会留下 1 条。
+            return [
+                NodeWithScore(node=node.node, score=0.9 if i == 0 else 0.01)
+                for i, node in enumerate(nodes[:top_n])
+            ]
+
+    result = _run_graph(_ManyCandidates())
+
+    assert not result["refuse"], f"不该拒答: {result.get('refuse_reason')}"
+    assert len(result["reranked_docs"]) == 5, (
+        f"top1 达标却只给了 {len(result['reranked_docs'])} 条"
+    )
+    usage = result["threshold_usage"]
+    assert usage["scale"] == "rerank_relevance"
+    assert usage["rule"] == "top1_gate"
+    assert usage["applied"] is True
+    assert usage["candidates"] == 5
+    assert usage["returned"] == 5
 
 
 def test_both_paths_agree_when_rerank_degraded():

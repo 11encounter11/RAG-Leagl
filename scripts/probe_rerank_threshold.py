@@ -4,10 +4,12 @@
 跌的题分两种机制, 光看评测报告分不出来:
 
   A. 重排把要的那条排到 top_k 之外(顺序问题);
-  B. 阈值把整批候选砍到只剩 1 条(数量问题) —— `SIMILARITY_THRESHOLD=0.1` 原本是照着
-     **原始余弦相似度**标定的, 开重排后同一句话作用在 **sigmoid 相关度分**上, 尺度完全不同。
+  B. 阈值闸门把整批候选拒掉(数量问题) —— `SIMILARITY_THRESHOLD=0.1` 是 2026-09-22
+     在当时的旧语料(以《劳动法》107 条为主)上按重排分标定的; 语料扩到 703 条后, 绝对分的分布已不可比。
+     2026-10-20 (P2-20) 起阈值**只判本批 top1**: 达标就保留、条数交给 top_k,
+     所以现在这里只该看到"整批采用"或"整批拒绝", 不再逐条砍。
 
-本探针把两者拆开打印: 全量候选的重排分 + 阈值前后各剩几条 + 标注条文落在第几名。
+本探针把两者拆开打印: 全量候选的重排分 + 闸门前后各剩几条 + 标注条文落在第几名。
 
 用法:
     python scripts/probe_rerank_threshold.py                    # 跑评测集里 recall 掉的那几题
@@ -66,7 +68,11 @@ def main() -> int:
     settings.ENABLE_VALIDITY_FILTER = True
     threshold = settings.SIMILARITY_THRESHOLD if args.threshold is None else args.threshold
 
-    from app.core.rag.retriever import filter_by_similarity_threshold
+    from app.core.rag.retriever import (
+        SIMILARITY_THRESHOLD_RULE,
+        SIMILARITY_THRESHOLD_SCALE,
+        filter_by_similarity_threshold,
+    )
     from app.services.rag_service import rag_service
 
     rag_service.init_index(rebuild_bm25=True, preload_reranker=False)
@@ -85,7 +91,7 @@ def main() -> int:
         cases = load_cases(DEFAULT_DATASET)
         wanted = [cases[i] for i in args.ids.split(",") if i.strip() in cases]
 
-    print(f"阈值={threshold}(settings.SIMILARITY_THRESHOLD 的原意是**原始余弦相似度**) | "
+    print(f"阈值={threshold}(尺子={SIMILARITY_THRESHOLD_SCALE}, 规则={SIMILARITY_THRESHOLD_RULE}) | "
           f"top_k={args.top_k} | 时效过滤=开 | 重排=生效\n")
 
     for case in wanted:
@@ -113,8 +119,16 @@ def main() -> int:
             if law in label(n) and (n.node.metadata or {}).get("article_no") in required
         ]
 
-        print(f"  候选 {len(fused)} 条 -> 重排取前 {len(prod_pool)} 条 -> 阈值({threshold})剩 "
-              f"{len(kept)} 条 -> 本次真正交给模型的条数 = {len(kept[:args.top_k])}")
+        gate_applied = bool(
+            retriever.rerank_effective and threshold and threshold > 0
+        )
+        gate_state = ("未启用" if not gate_applied else ("采用" if kept else "拒绝"))
+        print(f"  候选 {len(fused)} 条 -> 重排取前 {len(prod_pool)} 条 -> "
+              f"阈值闸门({threshold}, 只判 top1) {gate_state}, 保留 {len(kept)} 条 -> "
+              f"本次真正交给模型的条数 = {len(kept[:args.top_k])}")
+        if prod_pool:
+            print(f"  top1 分数 {prod_pool[0].score:.4f} "
+                  f"(尺子={SIMILARITY_THRESHOLD_SCALE}, 阈值={threshold})")
         if expected_ranks:
             print(f"  期望条文重排后位于: 第 {expected_ranks} 名"
                   f"{'（在 top_k 内）' if expected_ranks[0] <= args.top_k else '（掉出 top_k）'}")
@@ -134,11 +148,11 @@ def main() -> int:
                     mark = "  ← 可接受"
             pool_pos = i <= len(prod_pool)
             if not pool_pos:
-                gone = f"  (排在送进阈值的前 {len(prod_pool)} 名之外, 与阈值无关)"
+                gone = f"  (排在送进闸门的前 {len(prod_pool)} 名之外, 与阈值无关)"
             elif id(node) in kept_ids:
                 gone = ""
             else:
-                gone = "  ✂ 被阈值砍掉"
+                gone = "  ✂ 被阈值闸门整批拒绝"
             print(f"   {i:>3}. {label(node):<26} rel={node.score:.4f} "
                   f"[{md.get('validity_status') or '?'}]{mark}{gone}")
         if not args.full and len(reranked) > len(shown):

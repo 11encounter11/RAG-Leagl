@@ -143,10 +143,46 @@ def test_retrieval_info_snapshots_the_switches_in_effect(monkeypatch):
     assert config["domain_score_reject"] == pytest.approx(settings.DOMAIN_SCORE_REJECT)
 
 
+def test_snapshot_names_the_threshold_yardstick():
+    """P2-20: 留痕必须说清这个数是拿什么尺子量的, 否则两个尺度同数不同义。
+
+    `similarity_threshold` 比的是重排归一化相关度(0~1), 用法是只判本批 top1。
+    """
+    config = build_retrieval_info(_retrieval(), model_name="m", top_k=5)["config"]
+
+    assert config["similarity_threshold_scale"] == "rerank_relevance"
+    assert config["similarity_threshold_rule"] == "top1_gate"
+
+
+def test_retrieval_info_records_the_actual_threshold_gate():
+    """配置里有值不等于这次真的比过 —— 实际闸门状态单独记。"""
+    usage = {
+        "scale": "rerank_relevance",
+        "rule": "top1_gate",
+        "value": 0.1,
+        "applied": True,
+        "top1_score": 0.1954,
+        "candidates": 5,
+        "kept": 5,
+        "returned": 5,
+    }
+    info = build_retrieval_info(
+        _retrieval(threshold_usage=usage), model_name="m", top_k=5
+    )
+
+    assert info["threshold_usage"] == usage
+
+
+def test_missing_threshold_usage_is_an_empty_object_not_null():
+    """旧调用方/直连路径可能拿不到实况; 写空对象, 别写 null 让查询分两派。"""
+    info = build_retrieval_info(_retrieval(), model_name="m", top_k=5)
+    assert info["threshold_usage"] == {}
+
+
 def test_snapshot_keeps_the_request_level_cutoff_threshold():
-    """`similarity_threshold` 由请求体带进来，且真的会丢片段
-    （`retriever.py:412` 的 `node.score >= similarity_threshold`）。
-    同一个问题换个阈值，召回条数就不同 —— 不记它，"这次怎么只回来 2 条"就没法解释。
+    """`similarity_threshold` 由请求体带进来，且真的会改变闸门结果
+    （`filter_by_similarity_threshold`：top1 低于它就整批不用）。
+    同一个问题换个阈值，召回条数就不同 —— 不记它，"这次怎么一条都没回来"就没法解释。
     """
     info = build_retrieval_info(
         _retrieval(), model_name="deepseek-flash", top_k=5, similarity_threshold=0.5

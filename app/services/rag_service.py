@@ -418,6 +418,13 @@ class RAGService:
         nodes = self._retriever.retrieve(query, top_k, similarity_threshold)
         return nodes, self._retriever.get_context_text(nodes)
 
+    @property
+    def last_threshold_info(self) -> Dict[str, Any]:
+        """最近一次直连检索的阈值闸门实况, 供留痕。工作流走自己的状态, 不读这里。"""
+        if self._retriever is None:
+            return {}
+        return self._retriever.last_threshold_info
+
     async def retrieve_with_workflow(
         self,
         query: str,
@@ -464,6 +471,7 @@ class RAGService:
             "domain_score": 1.0,
             "confidence_level": "high",
             "refuse_reason": "",
+            "threshold_usage": {},
             "workflow_steps": [],
         }
 
@@ -488,6 +496,8 @@ class RAGService:
             "domain_score": result.get("domain_score", 0.0),
             "confidence_level": result.get("confidence_level", "high"),
             "retry_count": result.get("retry_count", 0),
+            # 阈值闸门的尺子名/值/top1/保留条数 —— 写进 retrieval_info, 事后可复盘
+            "threshold_usage": result.get("threshold_usage") or {},
         }
 
     def get_sources_info(self, nodes: List[Any]) -> List[dict]:

@@ -38,7 +38,13 @@ with st.sidebar:
     # 检索设置
     st.subheader("检索设置")
     top_k = st.slider("Top-K（返回片段数）", 1, 10, 5)
-    similarity_threshold = st.slider("相似度阈值（重排归一化分，默认=服务端标定的 0.1）", 0.0, 1.0, 0.1, 0.05)
+    similarity_threshold = st.slider(
+        "准入阈值（重排归一化分，只判本批第 1 名；默认=服务端标定的 0.1）",
+        0.0,
+        1.0,
+        0.1,
+        0.05,
+    )
 
     st.markdown("---")
 

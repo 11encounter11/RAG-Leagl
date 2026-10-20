@@ -110,6 +110,10 @@ def run_check(dataset: str = str(DEFAULT_DATASET)) -> int:
 
 async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -> int:
     """执行检索评测。"""
+    from app.core.rag.retriever import (
+        SIMILARITY_THRESHOLD_RULE,
+        SIMILARITY_THRESHOLD_SCALE,
+    )
     from app.services.rag_service import rag_service
 
     # rebuild_bm25=True 是必须的: 否则 BM25 语料为空, 评出来的其实是
@@ -151,7 +155,8 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
         f"检索配置: 重排={'生效' if rerank_effective else ('配置要求开但加载失败' if rerank_requested else '关')} "
         f"Query改写={'开' if settings.ENABLE_QUERY_REWRITE else '关'} "
         f"时效过滤={'开' if settings.ENABLE_VALIDITY_FILTER else '关'} "
-        f"BM25语料={rag_service._retriever.bm25_size} 条"
+        f"BM25语料={rag_service._retriever.bm25_size} 条 "
+        f"阈值={settings.SIMILARITY_THRESHOLD}({SIMILARITY_THRESHOLD_SCALE}/{SIMILARITY_THRESHOLD_RULE})"
     )
 
     cases = load_dataset(dataset)
@@ -162,9 +167,11 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
             result = await rag_service.retrieve_with_workflow(case.question, top_k, None)
             nodes = result.get("reranked_docs", [])
             refused = bool(result.get("refuse"))
+            threshold_usage = result.get("threshold_usage") or {}
         else:
             nodes, _ = rag_service.retrieve(case.question, top_k, None)
             refused = not nodes
+            threshold_usage = rag_service.last_threshold_info
 
         # 带上法名分档: 语料含多部法, 只比条文号会把另一部法的同名条文判成命中
         grades = [
@@ -203,6 +210,9 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 "precision": precision_at_k(grades, top_k),
                 "stale_ratio": stale_ratio_at_k(retrieved_status, top_k),
                 "refused": 1.0 if refused else 0.0,
+                # 这一题的阈值闸门实况: top1/保留/实际返回, 以及尺子名。
+                # 报告只记"阈值=0.1"无法判断它有没有参与、砍掉了什么(P2-20)。
+                "threshold_usage": threshold_usage,
                 "latency_ms": None,
             }
         )
@@ -257,6 +267,9 @@ async def run_eval(top_k: int, mode: str, dataset: str = str(DEFAULT_DATASET)) -
                 # 带着 Cross-Encoder 跑出来的。两者不一致时阈值语义完全不同。
                 "rerank_requested": rerank_requested,
                 "rerank_effective": rerank_effective,
+                "similarity_threshold": settings.SIMILARITY_THRESHOLD,
+                "similarity_threshold_scale": SIMILARITY_THRESHOLD_SCALE,
+                "similarity_threshold_rule": SIMILARITY_THRESHOLD_RULE,
                 "overall": overall,
                 "by_kind": by_kind,
                 "per_question": per_question,

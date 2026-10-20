@@ -37,6 +37,8 @@ from app.core.llm.router import llm_router
 from app.core.memory.redis_store import redis_store
 from app.core.rag.retriever import (
     HybridRetriever,
+    SIMILARITY_THRESHOLD_RULE,
+    describe_threshold_gate,
     filter_by_similarity_threshold,
     reciprocal_rank_fusion,
 )
@@ -64,6 +66,8 @@ class RAGWorkflowState(TypedDict, total=False):
     domain_score: float
     confidence_level: str
     refuse_reason: str
+    # 最近一轮阈值闸门的实况(尺子名/值/是否生效/保留条数), 进 retrieval_info
+    threshold_usage: Dict[str, Any]
     workflow_steps: List[str]
 
 
@@ -93,12 +97,15 @@ def classify_domain(score: float) -> str:
 # 重试计划 —— 每一次重试都必须改变点什么
 # ============================================================
 RETRY_PLAN: List[Dict[str, Any]] = [
-    # 第 0 轮: 默认参数
+    # 阈值是**准入闸门**(只判这一批的 top1, 见 filter_by_similarity_threshold),
+    # 不是"每条片段的及格线"。所以重试**不再动它**: 该扩大的是召回面(top_k、
+    # 拆子问题), 不是降低证据标准。旧表里的 0.30 / 0.20 写于默认阈值还是 0.5 的
+    # 年代, 默认改成 0.1 之后它们反而比第 0 轮更严 —— 属于参数漂移(P2-20 一并修)。
     {"round": 0, "top_k": settings.TOP_K, "threshold": settings.SIMILARITY_THRESHOLD, "split": False},
-    # 第 1 轮: 扩大召回面 + 放宽阈值(常常只是阈值卡太严)
-    {"round": 1, "top_k": 15, "threshold": 0.30, "split": False},
-    # 第 2 轮: 复合问题拆成子问题分别召回(可能是"一个问题盖了两件事")
-    {"round": 2, "top_k": 15, "threshold": 0.20, "split": True},
+    # 第 1 轮: 扩大召回面
+    {"round": 1, "top_k": 15, "threshold": settings.SIMILARITY_THRESHOLD, "split": False},
+    # 第 2 轮: 复合问题拆成子问题分别召回
+    {"round": 2, "top_k": 15, "threshold": settings.SIMILARITY_THRESHOLD, "split": True},
 ]
 
 
@@ -295,6 +302,7 @@ def create_rag_workflow():
             return {
                 "reranked_docs": [],
                 "context": "",
+                "threshold_usage": {},
                 "workflow_steps": _step(state, "rerank:no_candidates"),
             }
 
@@ -311,15 +319,28 @@ def create_rag_workflow():
         # RRF 名次分(第一名也才 0.03), 被 0.5/0.3/0.2 三轮阈值全部误杀, 表现是
         # **所有正常问题都被静默拒答**, 而直连检索那条路因为有防护一切正常,
         # 于是离线评测(跑的是直连)完全测不到。2026-10-17 实测确认。
+        scores_are_relevance = retriever.rerank_effective
         kept = filter_by_similarity_threshold(
-            reranked, threshold, scores_are_relevance=retriever.rerank_effective
+            reranked, threshold, scores_are_relevance=scores_are_relevance
         )
 
         final = kept[:top_k]
+        usage = describe_threshold_gate(
+            threshold=threshold,
+            scores_are_relevance=scores_are_relevance,
+            applied=bool(scores_are_relevance and threshold and threshold > 0),
+            nodes=reranked,
+            kept=len(kept),
+            returned=len(final),
+        )
         return {
             "reranked_docs": final,
             "context": retriever.get_context_text(final) if final else "",
-            "workflow_steps": _step(state, f"rerank(threshold={threshold},top_k={top_k})"),
+            "threshold_usage": usage,
+            "workflow_steps": _step(
+                state,
+                f"rerank(threshold={threshold},top_k={top_k},rule={SIMILARITY_THRESHOLD_RULE})",
+            ),
         }
 
     async def reflect(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:

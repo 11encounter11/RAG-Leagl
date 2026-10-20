@@ -27,7 +27,7 @@ class ChatRequest(BaseModel):
     top_k: Optional[int] = Field(5, description="检索返回的文档片段数")
     similarity_threshold: Optional[float] = Field(
         None,
-        description="相似度阈值(作用于重排归一化分)。不传则用服务端标定值 settings.SIMILARITY_THRESHOLD",
+        description="准入阈值(作用于重排归一化分, 只判本批 top1)。不传则用服务端标定值 settings.SIMILARITY_THRESHOLD",
     )
     use_agentic_rag: Optional[bool] = Field(True, description="是否启用 Agentic RAG 工作流")
 

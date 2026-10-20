@@ -234,16 +234,52 @@ def test_rrf_fusion_ranks_documents_hit_by_both_paths_first():
 # ============================================================
 
 
-def test_threshold_applies_to_normalized_score():
+def test_threshold_gate_uses_top1_and_keeps_lower_ranks():
+    """阈值只决定"这一批用不用", 不逐条砍 —— 第 2~5 名不因绝对分低被丢。
+
+    旧行为是逐条 `score >= threshold`。2026-10-19 实测 L40 的期望条文重排后
+    排第 3、rel 只有 0.0140, 被 0.1 砍掉后整批 5 条只剩 1 条喂给模型(P2-20)。
+    """
     good = _node("高相关条文")
-    bad = _node("低相关条文")
-    retriever, _ = _build([NodeWithScore(node=good, score=1.0), NodeWithScore(node=bad, score=1.0)])
-    retriever._reranker = _FakeReranker({good.text: 4.0, bad.text: -4.0})
+    low_but_ranked = _node("排第 2 但绝对分低")
+    retriever, _ = _build(
+        [NodeWithScore(node=good, score=1.0), NodeWithScore(node=low_but_ranked, score=1.0)]
+    )
+    retriever._reranker = _FakeReranker({good.text: 0.8, low_but_ranked.text: -4.0})
 
     kept = retriever.retrieve("查询", top_k=5, similarity_threshold=0.5)
-    texts = [node.node.text for node in kept]
-    assert good.text in texts
-    assert bad.text not in texts
+
+    assert [node.node.text for node in kept] == [good.text, low_but_ranked.text], (
+        "top1 达标后整批保留, 不再逐条砍"
+    )
+    info = retriever.last_threshold_info
+    assert info["scale"] == "rerank_relevance"
+    assert info["rule"] == "top1_gate"
+    assert info["value"] == 0.5
+    assert info["applied"] is True
+    assert info["top1_score"] > 0.5
+    assert info["returned"] == 2
+
+
+def test_rerank_on_returns_top_k_when_top1_passes():
+    """P2-20 验收③: 开重排后, 只要 top1 达标, 返回条数不得少于 top_k。
+
+    候选比 top_k 多, 且第 2 名之后全部远低于阈值 —— 旧实现只会返回 1 条。
+    """
+    nodes = [NodeWithScore(node=_node(f"条文{i}"), score=0.5) for i in range(6)]
+    retriever, _ = _build(nodes)
+    retriever._reranker = _FakeReranker(
+        {nodes[0].node.text: 0.8, **{n.node.text: -4.0 for n in nodes[1:]}}
+    )
+
+    kept = retriever.retrieve("查询", top_k=5, similarity_threshold=0.5)
+
+    assert len(kept) == 5, f"top1 达标却只返回 {len(kept)} 条(阈值又吃坑位了)"
+    assert kept[0].node.text == nodes[0].node.text
+
+    rejected = retriever.retrieve("查询", top_k=5, similarity_threshold=0.9)
+    assert rejected == [], "top1 自己都不达标时才整批不用"
+    assert retriever.last_threshold_info["returned"] == 0
 
 
 def test_threshold_skipped_when_reranker_disabled():
@@ -254,6 +290,8 @@ def test_threshold_skipped_when_reranker_disabled():
 
     kept = retriever.retrieve("查询", top_k=5, similarity_threshold=0.5)
     assert len(kept) == 1, "关闭重排后仍应返回结果, 而不是被阈值全过滤"
+    assert retriever.last_threshold_info["applied"] is False
+    assert retriever.last_threshold_info["scale"] == "rrf_rank_scores"
 
 
 def test_threshold_skipped_when_reranker_fails_to_load():

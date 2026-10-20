@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 from llama_index.core import VectorStoreIndex
@@ -161,14 +161,59 @@ def tokenize_zh(text: str) -> List[str]:
         return [cleaned[i : i + 2] for i in range(max(len(cleaned) - 1, 1))]
 
 
+# 阈值这把尺子的名字 —— 进日志、留痕与评测报告。
+#
+# 数值比的是**重排器归一化后的相关度分**(0~1), 不是向量余弦相似度。
+# settings 里 `SIMILARITY_THRESHOLD` 这个名字是历史包袱(.env / API / 前端都这么叫),
+# 但语义必须写清楚 —— 否则回看留痕时会把两把尺子当成一把(P2-20 的由来)。
+SIMILARITY_THRESHOLD_SCALE = "rerank_relevance"
+SIMILARITY_THRESHOLD_RULE = "top1_gate"
+
+
+def describe_threshold_gate(
+    *,
+    threshold: Optional[float],
+    scores_are_relevance: bool,
+    applied: bool,
+    nodes: List[NodeWithScore],
+    kept: int,
+    returned: int,
+) -> Dict[str, Any]:
+    """记录**这一次**阈值闸门的实际状态。只供日志/留痕, 不参与筛选决策。"""
+    scores = [float(node.score or 0.0) for node in nodes]
+    return {
+        # 实际参与比较的分数来源; 重排未生效时是 RRF 名次分(此时 applied 必为 False)
+        "scale": SIMILARITY_THRESHOLD_SCALE if scores_are_relevance else "rrf_rank_scores",
+        "rule": SIMILARITY_THRESHOLD_RULE,
+        "value": float(threshold) if threshold is not None else None,
+        "applied": bool(applied),
+        "top1_score": round(max(scores), 4) if scores else None,
+        "candidates": len(nodes),
+        "kept": kept,
+        "returned": returned,
+    }
+
+
 def filter_by_similarity_threshold(
     nodes: List[NodeWithScore], threshold: float, *, scores_are_relevance: bool
 ) -> List[NodeWithScore]:
-    """按相似度阈值筛掉片段 —— **这条规则只有这一处定义**。
+    """按相关度阈值决定**这一批候选要不要用** —— 只看第 1 名，不逐条砍。
 
-    为什么要抽出来：同一条判断原先在直连检索（`retrieve()`）里做了防护，
-    而 Agentic 工作流的 `rerank` 节点**另写了一遍且漏了防护**（2026-10-17 实测：
-    重排关闭时所有 in-scope 问题被静默清空 → 一律拒答）。两条路必须共用一份逻辑。
+    这条规则只有这一处定义：直连检索与 Agentic 工作流的 `rerank` 节点共用。
+    2026-10-17 的教训是工作流另写了一遍且漏了防护，两条路各错各的。
+
+    **为什么是 top1 闸门而不是逐条筛（P2-20, 2026-10-20）**：
+        旧行为是保留所有 `score >= threshold` 的片段。在重排分上这会**吃掉 top_k
+        坑位**：L40 要的《劳动法》第一百零六条重排后排第 3、rel 只有 0.0140，
+        被 0.1 砍掉后整批 5 条只剩 1 条喂给模型；而 0.1 本身是 2026-09-22 在
+        旧语料(以《劳动法》107 条为主)上标定的，语料扩到 703 条后绝对分的分布已经不可比。
+        重排分的职责是**排序**，用它逐条决定"留几条"等于把排序问题又变成了
+        数量问题。"留几条"归 `top_k` 管；阈值只回答一个更粗的问题：
+        **这一批里最好的那条，够不够格拿来回答？**
+
+    语义：
+      · top1 >= threshold → 整批保留，调用方按 `top_k` 截断；
+      · top1 <  threshold → 整批不用（返回空，走重试/拒答）。
 
     `scores_are_relevance` 的含义是"手上这些分数能不能拿来和阈值比":
 
@@ -178,8 +223,11 @@ def filter_by_similarity_threshold(
         这时套阈值会把结果全部误杀, 而且不报错 —— 是最隐蔽的一类 bug。
 
     阈值本身不是"越高越严"的旋钮: 对名次分而言它没有语义, 降到 0.3、0.2 也一样错。
-    唯一正确的动作是跳过。"只要最好的几条"这件事由 `top_k` 负责, 不靠这里。
+    唯一正确的动作是跳过。
     """
+    if not nodes:
+        return []
+
     if not scores_are_relevance:
         logger.warning(
             "[HybridRetriever] 当前分数不是相关度分(重排未启用或未生效), "
@@ -192,17 +240,28 @@ def filter_by_similarity_threshold(
     if not threshold or threshold <= 0:
         return nodes
 
-    kept = [node for node in nodes if (node.score or 0.0) >= threshold]
-    if not kept and nodes:
-        # 阈值把结果全过滤掉通常是配置问题, 必须留痕才好发现
+    top1 = max(float(node.score or 0.0) for node in nodes)
+    if top1 < threshold:
+        # 整批拒绝通常是配置问题或问题本身超出语料范围, 必须留痕才好发现
         logger.warning(
-            "[HybridRetriever] 阈值 %.3f 过滤掉了全部 %d 条候选(最高分 %.4f), "
-            "请检查阈值语义或重排器分数分布",
+            "[HybridRetriever] 阈值闸门(%s, 只判 top1): 最高分 %.4f < %.3f, "
+            "整批 %d 条候选不采用",
+            SIMILARITY_THRESHOLD_RULE,
+            top1,
             threshold,
             len(nodes),
-            max((n.score or 0.0) for n in nodes),
         )
-    return kept
+        return []
+
+    logger.debug(
+        "[HybridRetriever] 阈值闸门(%s, 只判 top1): 最高分 %.4f >= %.3f, "
+        "保留全部 %d 条候选(最终条数交给 top_k)",
+        SIMILARITY_THRESHOLD_RULE,
+        top1,
+        threshold,
+        len(nodes),
+    )
+    return nodes
 
 
 def reciprocal_rank_fusion(
@@ -255,6 +314,10 @@ class HybridRetriever:
         # 为 False 时返回的分数仍是 RRF 原值(0.01~0.03 量级), 不是归一化相似度,
         # 因而绝不能施加相似度阈值 —— 否则整路召回被静默误杀(见 retrieve 的说明)。
         self._last_rerank_ok = False
+        # 最近一次 retrieve() 的阈值闸门实况(尺子名/值/是否生效/保留条数)。
+        # 供直连检索的调用方写进 retrieval_info —— 没它, 回看留痕时只能猜
+        # 那个 0.1 比的是相关度还是别的什么。
+        self._last_threshold_info: Dict[str, Any] = {}
         self._bm25: Optional[BM25L] = None
 
         self._vector_top_k = max(settings.BM25_TOP_K * 2, settings.TOP_K)
@@ -446,16 +509,23 @@ class HybridRetriever:
         """
         return bool(self._use_reranker and self._last_rerank_ok)
 
+    @property
+    def last_threshold_info(self) -> Dict[str, Any]:
+        """最近一次 `retrieve()` 的阈值闸门实况。工作流不走这里(它有自己的状态)。"""
+        return dict(self._last_threshold_info)
+
     def retrieve(
         self,
         query: str,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
     ) -> List[NodeWithScore]:
-        """完整检索: 召回 -> 重排 -> 阈值过滤。
+        """完整检索: 召回 -> 重排 -> 阈值闸门 -> top_k 截断。
 
-        阈值作用在**归一化后**的相关性分上(见 normalize_rerank_score)。
+        阈值只判这一批候选的 top1(见 filter_by_similarity_threshold),
+        **留几条由 top_k 决定**; 分数是重排归一化后的相关度, 不是余弦相似度。
         """
+        self._last_threshold_info = {}
         if not query or not query.strip():
             return []
 
@@ -476,16 +546,38 @@ class HybridRetriever:
             logger.debug(
                 "[HybridRetriever] 重排未启用, 直接返回融合结果前 %d 条(不套相似度阈值)", top_k
             )
-            return fused[:top_k]
+            result = fused[:top_k]
+            self._last_threshold_info = describe_threshold_gate(
+                threshold=similarity_threshold,
+                scores_are_relevance=False,
+                applied=False,
+                nodes=fused,
+                kept=len(fused),
+                returned=len(result),
+            )
+            return result
 
         reranked = self.rerank(query, fused, top_n=max(top_k, settings.RERANK_TOP_N))
 
         # 阈值规则与工作流共用同一处定义(见 filter_by_similarity_threshold)
-        reranked = filter_by_similarity_threshold(
-            reranked, similarity_threshold, scores_are_relevance=self.rerank_effective
+        scores_are_relevance = self.rerank_effective
+        kept = filter_by_similarity_threshold(
+            reranked, similarity_threshold, scores_are_relevance=scores_are_relevance
         )
-
-        return reranked[:top_k]
+        result = kept[:top_k]
+        self._last_threshold_info = describe_threshold_gate(
+            threshold=similarity_threshold,
+            scores_are_relevance=scores_are_relevance,
+            applied=bool(
+                scores_are_relevance
+                and similarity_threshold
+                and similarity_threshold > 0
+            ),
+            nodes=reranked,
+            kept=len(kept),
+            returned=len(result),
+        )
+        return result
 
     # ------------------------------------------------------------
     # BM25

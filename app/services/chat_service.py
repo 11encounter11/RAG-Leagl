@@ -26,6 +26,7 @@ from app.core.llm.router import llm_router
 from app.core.memory.db_store import db_manager
 from app.core.memory.redis_store import redis_store
 from app.core.rag.embedder import EMBEDDING_MODEL
+from app.core.rag.retriever import SIMILARITY_THRESHOLD_RULE, SIMILARITY_THRESHOLD_SCALE
 from app.services.rag_service import rag_service
 from app.utils.sse import sse_done, sse_error, sse_format
 
@@ -125,6 +126,9 @@ def build_retrieval_info(
         "confidence_level": retrieval.get("confidence_level", "high"),
         "workflow_steps": list(retrieval.get("workflow_steps") or []),
         "reflection_score": retrieval.get("reflection_score"),
+        # 这一次阈值闸门到底比了什么: 尺子名、数值、是否真的生效、top1 与保留条数。
+        # 只记 config 里的值不够 —— 重排没生效时那个值根本没参与比较(P2-20)。
+        "threshold_usage": retrieval.get("threshold_usage") or {},
         # 配置快照: 离开当次开关, 这组留痕就读不出含义了 —— 评测那边已经吃过一次
         # (同一份代码开/关过滤是两套数字, 报告不记配置就分不出是哪一次)。
         "config": {
@@ -138,6 +142,11 @@ def build_retrieval_info(
                 if similarity_threshold is not None
                 else settings.SIMILARITY_THRESHOLD
             ),
+            # 这个数比的是**重排归一化后的相关度分**(0~1), 不是余弦相似度;
+            # 用法是"只判本批 top1, 达标就交给 top_k 截断"(见 filter_by_similarity_threshold)。
+            # 名字必须进留痕, 否则两张尺子同数不同义, 复盘时必然误读。
+            "similarity_threshold_scale": SIMILARITY_THRESHOLD_SCALE,
+            "similarity_threshold_rule": SIMILARITY_THRESHOLD_RULE,
             "agentic_rag": settings.ENABLE_AGENTIC_RAG,
             "query_rewrite": settings.ENABLE_QUERY_REWRITE,
             "rerank": settings.ENABLE_RERANK,
@@ -186,6 +195,7 @@ class ChatService:
                 "refuse_reason": result.get("refuse_reason", ""),
                 "domain_score": result.get("domain_score"),
                 "confidence_level": result.get("confidence_level", "high"),
+                "threshold_usage": result.get("threshold_usage") or {},
             }
 
         nodes, context = rag_service.retrieve(message, top_k, similarity_threshold)
@@ -202,6 +212,7 @@ class ChatService:
             "refuse_reason": "" if nodes else "直接检索模式未召回任何片段",
             "domain_score": None,
             "confidence_level": "high" if nodes else "out_of_domain",
+            "threshold_usage": rag_service.last_threshold_info,
         }
 
     @staticmethod
