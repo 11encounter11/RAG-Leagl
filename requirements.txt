@@ -2,6 +2,9 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
+# 前端页面。之前一直漏声明 —— 本机 conda 环境自带, 换台机器按 requirements
+# 装完就只剩后端, `streamlit run streamlit_app.py` 直接 command not found。
+streamlit>=1.36
 
 # LLM & RAG - LlamaIndex
 llama-index-core>=0.11.0

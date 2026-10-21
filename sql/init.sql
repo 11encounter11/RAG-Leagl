@@ -1,5 +1,10 @@
 -- 法律智能问答系统 - 数据库初始化脚本
 
+-- MySQL 容器首次执行本脚本时客户端字符集默认是 latin1,
+-- 会让下面的中文 ENUM 值和注释按 latin1 写入 utf8mb4 表 —— 表现为
+-- law_level 写入“法律”时报 Data truncated。必须显式声明连接字符集。
+SET NAMES utf8mb4;
+
 -- 会话表
 CREATE TABLE IF NOT EXISTS conversations (
     id VARCHAR(64) PRIMARY KEY COMMENT '会话ID（UUID）',
@@ -20,6 +25,8 @@ CREATE TABLE IF NOT EXISTS messages (
     model_name VARCHAR(50) DEFAULT NULL COMMENT '使用的模型（assistant消息）',
     tokens_used INT DEFAULT 0 COMMENT '消耗的 token 数',
     retrieval_info JSON DEFAULT NULL COMMENT '检索信息（命中的文档片段等）',
+    duration_ms INT NULL COMMENT '整次请求耗时(毫秒)',
+    first_token_ms INT NULL COMMENT '首 token 耗时(毫秒, 仅流式; NULL = 不适用)',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     INDEX idx_conversation_id (conversation_id),
     INDEX idx_created_at (created_at),
