@@ -293,3 +293,53 @@ def test_persist_still_writes_info_when_retrieval_absent(monkeypatch):
     assert info["sources"] == []
     assert info["retrieval_count"] == 0
     assert "config" in info
+
+
+def test_retrieval_info_keeps_structured_reflection_gaps():
+    """P2-04: 复盘要能看出"缺什么/为什么重试", 不能只剩一个分数。"""
+    info = build_retrieval_info(
+        _retrieval(
+            reflection_core_basis=True,
+            reflection_coverage="partial",
+            reflection_missing_type="law",
+            reflection_missing=["劳动合同法第三十九条"],
+            reflection_missing_query="孕期 严重违纪 例外",
+        ),
+        model_name="deepseek-flash",
+        top_k=5,
+    )
+
+    assert info["reflection_core_basis"] is True
+    assert info["reflection_coverage"] == "partial"
+    assert info["reflection_missing_type"] == "law"
+    assert info["reflection_missing"] == ["劳动合同法第三十九条"]
+    assert info["reflection_missing_query"] == "孕期 严重违纪 例外"
+
+
+def test_with_caution_appends_missing_gap():
+    """即使模型没在正文里写缺口, 也必须给用户一个确定性的提示。"""
+    out = ChatService._with_caution(
+        "答案正文",
+        {
+            "confidence_level": "high",
+            "reflection_missing": ["劳动合同法第三十九条"],
+        },
+    )
+
+    assert "答案正文" in out
+    assert "现有资料未覆盖" in out
+    assert "劳动合同法第三十九条" in out
+
+
+def test_with_caution_appends_partial_coverage_note_without_specific_gap():
+    """coverage=partial 但模型没列具体缺口时, 也不能静默。"""
+    out = ChatService._with_caution(
+        "答案正文",
+        {
+            "confidence_level": "high",
+            "reflection_coverage": "partial",
+            "reflection_missing": [],
+        },
+    )
+
+    assert "未完全覆盖" in out

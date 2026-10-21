@@ -234,6 +234,22 @@ async def run_eval(
                 # direct 路径没有这些环节, 统一给空值, 保持逐题字段形状一致。
                 "rewritten_query": result.get("rewritten_query", "") if mode == "agentic" else "",
                 "reflection_score": result.get("reflection_score") if mode == "agentic" else None,
+                # P2-04: 结构化反思。只看分数无法区分"没检到"与"检到但缺例外"。
+                "reflection_core_basis": (
+                    result.get("reflection_core_basis") if mode == "agentic" else None
+                ),
+                "reflection_coverage": (
+                    result.get("reflection_coverage", "") if mode == "agentic" else ""
+                ),
+                "reflection_missing_type": (
+                    result.get("reflection_missing_type", "") if mode == "agentic" else ""
+                ),
+                "reflection_missing": (
+                    list(result.get("reflection_missing") or []) if mode == "agentic" else []
+                ),
+                "reflection_missing_query": (
+                    result.get("reflection_missing_query", "") if mode == "agentic" else ""
+                ),
                 "retry_count": result.get("retry_count", 0) if mode == "agentic" else 0,
                 "refuse_reason": result.get("refuse_reason", "") if mode == "agentic" else "",
                 "workflow_steps": result.get("workflow_steps", []) if mode == "agentic" else [],
@@ -319,6 +335,9 @@ async def run_eval(
                 "hyde": settings.ENABLE_HYDE,
                 "domain_gate": settings.ENABLE_DOMAIN_GATE,
                 "reflection_threshold": settings.REFLECTION_THRESHOLD,
+                # P2-04: 阈值只作旧格式兜底; 路由看 core_basis + coverage,
+                # 缺法是 gap 重试, 覆盖不全则带缺口生成。
+                "reflection_rule": "core_basis+coverage;threshold=fallback",
                 "max_retries": settings.MAX_RETRIES,
                 "retry_plan": RETRY_PLAN,
                 "limit": limit or None,

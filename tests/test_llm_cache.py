@@ -22,7 +22,7 @@ from app.config.settings import settings
 from app.core.workflow.rag_workflow import create_rag_workflow, params_for_round
 
 REWRITE_MARK = "改写成更适合在法律"
-REFLECT_MARK = "请评估下列检索片段是否足以回答用户问题"
+REFLECT_MARK = "你是劳动法检索结果的准入判断器"
 
 
 def _node(nid):
@@ -77,6 +77,7 @@ class CountingLLM:
     def __init__(self):
         self.rewrite_calls = 0
         self.reflect_calls = 0
+        self.reflect_prompts = []
 
     async def chat(self, messages, **kw):
         prompt = messages[-1]["content"]
@@ -85,7 +86,28 @@ class CountingLLM:
             return "用人单位未依法缴纳社会保险费 补缴 维权途径"
         if REFLECT_MARK in prompt:
             self.reflect_calls += 1
+            self.reflect_prompts.append(prompt)
             return '{"analysis": "足够", "confidence": 0.9}'
+        return '{"analysis": "足够", "confidence": 0.9}'
+
+
+class StructuredLLM(CountingLLM):
+    """按调用次数返回预设反思 JSON —— 用来测 core_basis/coverage 的路由。"""
+
+    def __init__(self, responses):
+        super().__init__()
+        self.responses = list(responses)
+
+    async def chat(self, messages, **kw):
+        prompt = messages[-1]["content"]
+        if REWRITE_MARK in prompt:
+            self.rewrite_calls += 1
+            return "用人单位未依法缴纳社会保险费 补缴 维权途径"
+        if REFLECT_MARK in prompt:
+            self.reflect_calls += 1
+            self.reflect_prompts.append(prompt)
+            index = min(self.reflect_calls - 1, len(self.responses) - 1)
+            return self.responses[index]
         return '{"analysis": "足够", "confidence": 0.9}'
 
 
@@ -115,12 +137,35 @@ class OtherRetriever(FakeRetriever):
         return [_node(f"other{i}") for i in range(6)]
 
 
+class LabeledRetriever(FakeRetriever):
+    """带法名/条号的候选 —— 反思抬头必须让模型看出这是哪部法第几条。"""
+
+    ARTICLE_NOS = ("第二十三条", "第二十四条", "第二十五条", "第二十六条", "第二十七条", "第二十八条")
+
+    def retrieve_raw(self, query, law_name=None):
+        return [
+            NodeWithScore(
+                node=TextNode(
+                    id_=f"labeled{i}",
+                    text=f"{article_no} 正文",
+                    metadata={
+                        "law_name": "中华人民共和国劳动法",
+                        "article_no": article_no,
+                        "validity_status": "effective",
+                    },
+                ),
+                score=0.9,
+            )
+            for i, article_no in enumerate(self.ARTICLE_NOS)
+        ]
+
+
 def _ids(nodes):
     return [n.node.node_id for n in nodes]
 
 
-def _run(monkeypatch, redis, retriever=None):
-    llm = CountingLLM()
+def _run(monkeypatch, redis, retriever=None, llm=None):
+    llm = llm or CountingLLM()
     monkeypatch.setattr(rw, "llm_router", Router(llm))
     monkeypatch.setattr(rw, "redis_store", redis)
     monkeypatch.setattr(settings, "ENABLE_QUERY_REWRITE", True)
@@ -197,6 +242,128 @@ def test_reflection_cache_is_not_shared_across_different_candidates(monkeypatch)
     assert not any(step.startswith("reflection(") and ":cache" in step
                    for step in result2["workflow_steps"]), "候选变了不许标成缓存命中"
     assert _ids(result2["reranked_docs"]) == [f"other{i}" for i in range(5)]
+
+
+def test_reflection_prompt_sees_five_labeled_candidates_and_rewritten_query(monkeypatch):
+    """反思必须看到用户实际会拿到的前 5 条, 并知道每条的法和条号。
+
+    原先只看前 3 条、抬头只有"片段N": L05 的《劳动法》第二十五条排第 5,
+    模型从未见过它; L08/L24 即使答案在第 1 名, 也因为没有法名/条号与
+    明确判据, 被按"答复不完整"打了 0.55(P2-04)。
+    """
+    redis = FakeRedis()
+    llm, _ = _run(monkeypatch, redis, retriever=LabeledRetriever())
+    prompt = llm.reflect_prompts[0]
+
+    assert "[5]" in prompt, "前 5 条都要进提示词"
+    assert "[6]" not in prompt, "第 6 条不应出现(用户只看到 5 条)"
+    assert "《中华人民共和国劳动法》" in prompt, "每条要带法名"
+    assert "第二十五条" in prompt, "要带条号, 否则模型不知道这是哪一条"
+    assert "用户原问题：公司一直不给我交社保怎么办" in prompt
+    assert "检索改写句：用人单位未依法缴纳社会保险费" in prompt
+    assert "有没有法条直接回答核心问题" in prompt, "判据是核心问题有无依据, 不是答复是否完整"
+    for field in ("core_basis", "coverage", "missing_type", "missing", "missing_query"):
+        assert f'"{field}"' in prompt, f"结构化字段 {field} 必须出现在提示里"
+
+
+PARTIAL_GAP = (
+    '{"core_basis": true, "coverage": "partial", "missing_type": "law", '
+    '"missing": ["劳动合同法第三十九条"], '
+    '"missing_query": "孕期 严重违纪 过失性辞退 例外", '
+    '"analysis": "缺例外", "confidence": 0.8}'
+)
+PARTIAL_NO_QUERY = (
+    '{"core_basis": true, "coverage": "partial", "missing_type": "user_fact", '
+    '"missing": ["辞退理由"], "missing_query": "", '
+    '"analysis": "缺事实", "confidence": 0.8}'
+)
+COMPLETE = (
+    '{"core_basis": true, "coverage": "complete", "missing_type": "none", '
+    '"missing": [], "missing_query": "", "analysis": "齐了", "confidence": 0.9}'
+)
+NO_CORE = (
+    '{"core_basis": false, "coverage": "none", "missing_type": "law", '
+    '"missing": ["劳动法第二十五条"], "missing_query": "试用期 解除 经济补偿", '
+    '"analysis": "缺核心", "confidence": 0.2}'
+)
+
+
+def test_reflection_parser_keeps_structured_gap():
+    parsed = rw._parse_reflection(PARTIAL_GAP)
+    assert parsed["core_basis"] is True
+    assert parsed["coverage"] == "partial"
+    assert parsed["missing_type"] == "law"
+    assert parsed["missing"] == ["劳动合同法第三十九条"]
+    assert parsed["missing_query"] == "孕期 严重违纪 过失性辞退 例外"
+    assert parsed["score"] == 0.8
+
+
+def test_reflection_parser_old_payload_uses_threshold_as_fallback(monkeypatch):
+    monkeypatch.setattr(settings, "REFLECTION_THRESHOLD", 0.6)
+    low = rw._parse_reflection('{"analysis": "不够", "confidence": 0.55}')
+    assert low["core_basis"] is False
+    assert low["coverage"] == "partial"
+
+    high = rw._parse_reflection('{"analysis": "够", "confidence": 0.9}')
+    assert high["core_basis"] is True
+    assert high["coverage"] == "complete"
+
+
+def test_reflection_parser_builds_gap_query_when_model_omits_it():
+    parsed = rw._parse_reflection(
+        '{"core_basis": true, "coverage": "partial", "missing_type": "law", '
+        '"missing": ["劳动合同法第三十九条"], "confidence": 0.8}'
+    )
+    assert parsed["missing_query"] == "劳动合同法第三十九条"
+
+
+def test_reflection_parser_downgrades_complete_with_missing():
+    parsed = rw._parse_reflection(
+        '{"core_basis": true, "coverage": "complete", "missing": ["第三十九条"], '
+        '"confidence": 0.9}'
+    )
+    assert parsed["coverage"] == "partial", "有缺口就不能标 complete"
+
+
+def test_partial_law_gap_retries_by_expanding_top_k_and_keeps_top5(monkeypatch):
+    """覆盖不全但缺法条: 只扩大 top_k, 不生成缺口查询, 原有 top5 不许变。
+
+    P2-04 第一版用 missing_query 做额外召回+重排, 全量实测把 L05/L21/L25
+    原来正确的 top-5 挤掉了; 现在改成"扩大候选池 + 反思看全部候选"。
+    """
+    redis = FakeRedis()
+    llm = StructuredLLM([PARTIAL_GAP, COMPLETE])
+
+    _, result = _run(monkeypatch, redis, llm=llm)
+
+    assert llm.reflect_calls == 2
+    assert result["retry_count"] == 1
+    assert result["refuse"] is False
+    assert result["reflection_coverage"] == "complete"
+    assert [
+        getattr(node.node, "node_id", "") for node in result["reranked_docs"][:5]
+    ] == [f"n{i}" for i in range(5)], "重试只扩大候选池, 不得改变原有前 5"
+    assert "[6]" in llm.reflect_prompts[1], "重试后反思必须看到扩大后的全部候选"
+
+
+def test_partial_user_fact_generates_without_retry(monkeypatch):
+    """缺的是用户事实: 扩大 top_k 也没用, 直接带缺口生成, 留给 HITL。"""
+    redis = FakeRedis()
+    _, result = _run(monkeypatch, redis, llm=StructuredLLM([PARTIAL_NO_QUERY]))
+
+    assert result["retry_count"] == 0
+    assert result["refuse"] is False
+    assert result["reflection_missing"] == ["辞退理由"]
+    assert "generation_ready" in result["workflow_steps"]
+
+
+def test_no_core_basis_retries_then_refuses(monkeypatch):
+    """core_basis=false: 没有法条直接支撑结论, 扩大候选也补不上 -> 仍拒答。"""
+    redis = FakeRedis()
+    _, result = _run(monkeypatch, redis, llm=StructuredLLM([NO_CORE]))
+
+    assert result["retry_count"] == 2
+    assert result["refuse"] is True
 
 
 def test_redis_being_down_does_not_break_the_answer(monkeypatch):

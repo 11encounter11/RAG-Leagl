@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List, Optional
 
 from app.core.generate.citation import CITATION_INSTRUCTION
 
@@ -27,14 +27,28 @@ SYSTEM_PROMPT_NO_CONTEXT = """你是一个严谨的法律信息助手。
 3. 不要编造法条，也不要假装引用。"""
 
 
-def build_system_prompt(context: str) -> Dict[str, str]:
-    """构造系统消息。引用格式与上下文格式同源。"""
+def build_system_prompt(
+    context: str, missing: Optional[List[str]] = None
+) -> Dict[str, str]:
+    """构造系统消息。引用格式与上下文格式同源。
+
+    `missing` 是反思节点给出的"资料未覆盖项"(P2-04)。检索只能按相关性取前 K 条,
+    它不会自动补全一个法律论证所需的例外/条件; 当反思已经指出缺口时, 必须让
+    生成模型知道, 否则它会拿半套依据给出一个听起来很确定的结论。
+    """
     if context and context.strip():
-        return {
-            "role": "system",
-            "content": SYSTEM_PROMPT_WITH_CONTEXT.format(
-                instruction=CITATION_INSTRUCTION,
-                context=context,
-            ),
-        }
+        content = SYSTEM_PROMPT_WITH_CONTEXT.format(
+            instruction=CITATION_INSTRUCTION,
+            context=context,
+        )
+        gaps = [str(item).strip() for item in (missing or []) if str(item).strip()]
+        if gaps:
+            content += (
+                "\n\n检索完整性提示：\n"
+                "现有参考资料未覆盖以下内容：\n"
+                + "\n".join(f"- {gap}" for gap in gaps)
+                + "\n回答时必须明确说明这些部分未能核实，"
+                "不得给出超出资料的绝对结论。"
+            )
+        return {"role": "system", "content": content}
     return {"role": "system", "content": SYSTEM_PROMPT_NO_CONTEXT}

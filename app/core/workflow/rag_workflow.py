@@ -33,6 +33,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.config.settings import settings
+from app.core.generate.citation import format_citation_label
 from app.core.law_versions import detect_law_name
 from app.core.llm.router import llm_router
 from app.core.memory.redis_store import redis_store
@@ -61,6 +62,14 @@ class RAGWorkflowState(TypedDict, total=False):
     context: str
     reflection_score: float
     reflection_note: str
+    # 结构化反思(P2-04): 不能只有一个 0.6 分。core_basis 决定能不能答,
+    # coverage/missing 决定还缺什么; missing_query 仅留痕, 当前不参与重试
+    # (缺口查询重排实测会挤掉正确 top-5, 见 P2-04 的全量回归记录)。
+    reflection_core_basis: bool
+    reflection_coverage: str          # complete / partial / none
+    reflection_missing_type: str      # none / law / user_fact / ambiguous / unknown
+    reflection_missing: List[str]
+    reflection_missing_query: str
     sources: List[dict]
     retry_count: int
     retry_params: Dict[str, Any]
@@ -245,7 +254,6 @@ def create_rag_workflow():
             queries.append(rewritten)
         if hyde_doc:
             queries.append(hyde_doc)
-
         # 第 2 轮重试: 把复合问题拆成子问题分别召回
         if params.get("split") and not state.get("sub_questions"):
             sub_questions = await _split_question(state["query"])
@@ -371,61 +379,94 @@ def create_rag_workflow():
         }
 
     async def reflect(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
-        """反思: 评估检索结果是否足以回答问题。"""
+        """反思: 候选里是否有回答核心问题所依据的法条(不要求答复完整)。"""
         reranked_docs = state.get("reranked_docs") or []
         if not reranked_docs:
             return {
                 "reflection_score": 0.0,
                 "reflection_note": "没有召回任何片段",
+                "reflection_core_basis": False,
+                "reflection_coverage": "none",
+                "reflection_missing_type": "unknown",
+                "reflection_missing": [],
+                "reflection_missing_query": "",
                 "workflow_steps": _step(state, "reflection:empty"),
             }
 
         llm = llm_router.get(settings.REFLECTION_MODEL)
+        # 反思必须看到**生成模型实际会拿到的全部候选**。原先只看前 5 条:
+        # 重试把候选扩到 15 条后, 第三十九条可能在第 10 名, 生成能看到、反思却
+        # 看不见, 于是它继续报"缺第三十九条", 生成侧被塞了一条与事实不符的缺口。
+        # 第 0 轮本来就只有 top_k=5, 所以正常情况下提示词不会变大。
+        # 抬头带上法名/条号/时效, 否则模型只看到一段法条正文, 无从判断它属于哪部法。
         docs_text = "\n---\n".join(
-            f"[片段{i + 1}]（相关性 {node.score:.3f}）\n{node.node.text[:300]}"
-            for i, node in enumerate(reranked_docs[:3])
+            f"{format_citation_label(node.node.metadata or {}, i + 1)}"
+            f"（相关性 {node.score:.3f}）\n{node.node.text[:500]}"
+            for i, node in enumerate(reranked_docs)
+        )
+        rewritten = state.get("rewritten_query") or ""
+        query_hint = (
+            f"用户原问题：{state['query']}\n检索改写句：{rewritten}\n"
+            if rewritten and rewritten != state["query"]
+            else f"用户问题：{state['query']}\n"
         )
         prompt = (
-            "请评估下列检索片段是否足以回答用户问题。\n\n"
-            f"用户问题：{state['query']}\n\n检索片段：\n{docs_text}\n\n"
+            "你是劳动法检索结果的准入判断器。你的任务不是判断片段能否拼出一份"
+            "完整答复，而是判断两件事：① 有没有法条直接回答核心问题；② 还缺什么。\n\n"
+            f"{query_hint}\n检索片段：\n{docs_text}\n\n"
             "只输出 JSON，不要任何其他内容：\n"
-            '{"analysis": "一句话分析", "confidence": 0.0}\n'
-            "confidence 取 0~1：1 表示片段已足够回答问题，0 表示完全不够。"
+            '{"core_basis": true, "coverage": "complete", "missing_type": "none", '
+            '"missing": [], "missing_query": "", "analysis": "命中哪条/缺什么", '
+            '"confidence": 0.0}\n\n'
+            "字段说明：\n"
+            "- core_basis：候选里是否至少有一条法条能直接支撑核心问题的结论；只是沾边不算。\n"
+            "- coverage：complete=核心规则、关键例外/条件都齐；partial=规则在但缺例外/条件/救济；"
+            "none=连核心规则都没有。\n"
+            "- missing_type：none / law（缺法条，需要补检索）/ user_fact（缺用户事实，"
+            "如辞退理由、合同期限）/ ambiguous（问题指代不明）。\n"
+            "- missing：最多 3 条具体缺口，写清缺哪部法哪条，或缺什么事实。\n"
+            "- missing_query：missing_type=law 时给一句补检索用的法律术语查询；"
+            "仅留痕, 当前工作流不会自动执行它；其他情况留空。\n"
+            "- analysis：一句话，说明命中了什么、缺什么。\n"
+            "- confidence：0~1，1 表示足以回答核心问题，0 表示完全不够。\n\n"
+            "判断规则：\n"
+            "1. 只要有一条法条直接对应核心问题，core_basis 就为 true；即使 coverage "
+            "不完整，也不要因此把 core_basis 判成 false。\n"
+            "2. 法条原文通常不直接写“可以/不可以”；能支撑结论即可，不要求它把结论写成大白话。\n"
+            "3. 按劳动法/劳动合同法语境理解；用户说“仲裁”指劳动争议仲裁，"
+            "不要引入商事仲裁等其他领域来要求补充。\n"
+            "4. 缺的是用户事实时，missing_type=user_fact，不要编造法条查询；"
+            "问题指代不明时用 ambiguous。\n"
+            "5. 复合问题只要核心部分有依据，core_basis 仍为 true，缺口写进 missing。\n"
         )
         # 反思是"答/不答"的判据，也必须可复现：同题两次实测 0.7 / 0.8，
-        # 接近阈值时结论会翻。输入相同（问题 + 前三条候选正文与分数）就复用
+        # 接近阈值时结论会翻。输入相同（问题 + 前 N 条候选正文与分数）就复用
         # 同一次判断，命中时不再花调用；候选或问题一变，prompt 变、key 变。
         response, from_cache = await _ask_llm_cached(llm, prompt, "reflection")
-        score, note = _parse_reflection(response)
+        details = _parse_reflection(response)
 
         return {
-            "reflection_score": score,
-            "reflection_note": note,
+            "reflection_score": details["score"],
+            "reflection_note": details["note"],
+            "reflection_core_basis": details["core_basis"],
+            "reflection_coverage": details["coverage"],
+            "reflection_missing_type": details["missing_type"],
+            "reflection_missing": details["missing"],
+            "reflection_missing_query": details["missing_query"],
             "workflow_steps": _step(
-                state, f"reflection({score:.2f}{':cache' if from_cache else ''})"
+                state,
+                f"reflection({details['score']:.2f}{':cache' if from_cache else ''})",
             ),
         }
-
-    def decide(state: RAGWorkflowState) -> str:
-        """条件边: 够好就生成, 不够好且还有额度就重试, 用完了就拒答。"""
-        # 领域判决优先于一切:
-        # 问题不在本知识库范围内时, 重试再多次也召不回"不存在的依据",
-        # 只会白烧 LLM 调用。所以先拒答, 不进入重试循环。
-        if state.get("confidence_level") == CONFIDENCE_OUT_OF_DOMAIN:
-            return "refuse"
-
-        score = state.get("reflection_score", 0.0)
-        retry_count = state.get("retry_count", 0)
-        if score >= settings.REFLECTION_THRESHOLD:
-            return "generate"
-        if retry_count < settings.MAX_RETRIES:
-            return "retry"
-        return "refuse"
 
     async def retry_handler(state: RAGWorkflowState, config: RunnableConfig = None) -> dict:
         """重试: 推进到下一档参数, 清空上一轮结果。"""
         retry_count = state.get("retry_count", 0) + 1
         new_params = params_for_round(retry_count)
+        # 只改检索参数(扩大 top_k / 拆子问题), 不再把反思的 missing_query
+        # 拼成额外查询去重排: 实测那样会挤掉原来正确的 top-5, 还会把
+        # "撤销仲裁裁决/刑法"等语料外内容带进候选。扩大后的候选池交给
+        # 反思全量查看, 缺失条文若在其中, 覆盖率会自然变完整。
         logger.info("[RAGWorkflow] 第 %d 次重试, 参数 -> %s", retry_count, new_params)
         return {
             "retry_count": retry_count,
@@ -500,7 +541,7 @@ def create_rag_workflow():
     workflow.add_edge("rerank", "reflect")
     workflow.add_conditional_edges(
         "reflect",
-        decide,
+        _decide_after_reflection,
         {"generate": "generate", "retry": "retry", "refuse": "refuse"},
     )
     # 重试直接回到 hybrid_retrieve, **不回到 analyze_query**。
@@ -533,28 +574,162 @@ async def _split_question(query: str) -> List[str]:
         return []
 
 
-def _parse_reflection(response: str) -> tuple[float, str]:
-    """从反思节点输出里解析置信度。
+_REFLECTION_COVERAGES = ("complete", "partial", "none")
+_REFLECTION_MISSING_TYPES = ("none", "law", "user_fact", "ambiguous", "unknown")
 
-    解析不出来时保守地返回 0.0(而不是 0.5)—— 反思节点的作用是"决定能不能答",
-    解析失败就当成没把握, 交给重试与拒答逻辑处理, 而不是乐观地放行。
+
+def _parse_reflection(response: str) -> dict:
+    """解析反思 JSON, 返回分数 + 结构化缺口(P2-04)。
+
+    为什么不再只返回一个分数: 0.6 分只能回答"够不够", 回答不了"缺什么"。
+    结构化字段让 decide 按 core_basis/coverage/missing_type 路由, 生成侧用
+    missing 写明缺口; missing_query 只留痕, 当前不触发额外检索(P2-04 实测
+    缺口查询重排会挤掉正确 top-5)。
+
+    兼容旧格式(只有 analysis/confidence): 按置信度推断 core_basis/coverage,
+    这样缓存里遗留的响应用不会让工作流直接崩掉。
+    解析不出来时保守地按 core_basis=False 处理, 交给重试/拒答, 不乐观放行。
     """
+
+    def _result(
+        score: float,
+        note: str,
+        *,
+        core_basis: bool,
+        coverage: str,
+        missing_type: str = "unknown",
+        missing: List[str] | None = None,
+        missing_query: str = "",
+    ) -> dict:
+        return {
+            "score": score,
+            "note": note,
+            "core_basis": core_basis,
+            "coverage": coverage,
+            "missing_type": missing_type,
+            "missing": missing or [],
+            "missing_query": missing_query,
+        }
+
     text = (response or "").strip()
     if not text:
-        return 0.0, "反思节点无输出"
+        return _result(0.0, "反思节点无输出", core_basis=False, coverage="none")
 
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
 
+    payload = None
     try:
         payload = json.loads(text)
-        score = float(payload.get("confidence", 0.0))
-        return max(0.0, min(1.0, score)), str(payload.get("analysis", ""))[:200]
     except Exception:  # noqa: BLE001
         match = re.search(r"confidence\"?\s*[:：]\s*([0-9]*\.?[0-9]+)", text)
-        if match:
-            return max(0.0, min(1.0, float(match.group(1)))), text[:200]
-        return 0.0, f"无法解析反思输出: {text[:120]}"
+        if not match:
+            return _result(
+                0.0,
+                f"无法解析反思输出: {text[:120]}",
+                core_basis=False,
+                coverage="none",
+            )
+        score = max(0.0, min(1.0, float(match.group(1))))
+        return _result(
+            score,
+            text[:200],
+            core_basis=score >= settings.REFLECTION_THRESHOLD,
+            coverage="complete" if score >= settings.REFLECTION_THRESHOLD else "partial",
+        )
+
+    if not isinstance(payload, dict):
+        return _result(
+            0.0,
+            f"反思输出不是 JSON 对象: {text[:120]}",
+            core_basis=False,
+            coverage="none",
+        )
+
+    score = max(0.0, min(1.0, float(payload.get("confidence", 0.0))))
+    core_basis = payload.get("core_basis")
+    if not isinstance(core_basis, bool):
+        # 旧格式兼容: 没有 core_basis 时用阈值推断
+        core_basis = score >= settings.REFLECTION_THRESHOLD
+
+    coverage = str(payload.get("coverage") or "").strip().lower()
+    if coverage not in _REFLECTION_COVERAGES:
+        coverage = (
+            "complete"
+            if core_basis and score >= settings.REFLECTION_THRESHOLD
+            else "partial"
+        )
+
+    raw_missing = payload.get("missing") or []
+    if not isinstance(raw_missing, list):
+        raw_missing = [raw_missing]
+    missing = [str(item).strip() for item in raw_missing if str(item).strip()][:3]
+    # 有具体缺口却标 complete 是自相矛盾, 统一降为 partial, 生成侧才会写"未核实"。
+    if missing and coverage == "complete":
+        coverage = "partial"
+
+    missing_type = str(payload.get("missing_type") or "").strip().lower()
+    if missing_type not in _REFLECTION_MISSING_TYPES:
+        missing_type = "unknown"
+    if missing_type == "none" and missing:
+        missing_type = "unknown"
+
+    missing_query = str(payload.get("missing_query") or "").strip()
+    if not missing_query and missing_type == "law" and missing:
+        # 模型偶尔只写缺口、不写检索词; 用缺口描述兜底, 方便后续复盘/HITL。
+        missing_query = " ".join(missing)[:200]
+
+    return _result(
+        score,
+        str(payload.get("analysis", ""))[:200],
+        core_basis=core_basis,
+        coverage=coverage,
+        missing_type=missing_type,
+        missing=missing,
+        missing_query=missing_query,
+    )
+
+
+def _decide_after_reflection(state: RAGWorkflowState) -> str:
+    """条件边: 有核心依据才生成; 缺核心依据/可补的缺口先重试; 补不上再拒答。
+
+    与旧逻辑的区别: 不再拿单一 0.6 分一刀切。
+      - core_basis=False: 没有法条能直接支撑结论 -> 扩大 top_k 重试, 用完拒答。
+      - core_basis=True + coverage=complete: 正常生成。
+      - core_basis=True + coverage=partial + missing_type=law: 扩大 top_k/拆题
+        重试(不生成缺口查询); 反思看到扩大后的全部候选自然能补全覆盖率。
+      - core_basis=True + 其他缺口(用户事实/指代不明/重试用完): 生成,
+        但生成侧必须写明缺口(不再拒答, 也不假装答全)。
+    0.6 阈值只作为旧格式(无 core_basis 字段)的兜底, 不再是主判据。
+    """
+    # 领域判决优先于一切: 超纲问题重试多少次也召不回不存在的依据。
+    if state.get("confidence_level") == CONFIDENCE_OUT_OF_DOMAIN:
+        return "refuse"
+
+    retry_count = state.get("retry_count", 0)
+    core_basis = state.get("reflection_core_basis")
+    if core_basis is None:
+        core_basis = state.get("reflection_score", 0.0) >= settings.REFLECTION_THRESHOLD
+
+    coverage = state.get("reflection_coverage") or (
+        "complete" if core_basis else "partial"
+    )
+
+    if not core_basis:
+        if retry_count < settings.MAX_RETRIES:
+            return "retry"
+        return "refuse"
+
+    if coverage == "complete":
+        return "generate"
+
+    # 核心依据在, 但缺法条: 用现有的重试机制扩大 top_k/拆题, 让候选池变大;
+    # **不要**再生成"缺口查询"去重排 —— 实测 L05/L21/L25 的缺口查询会把
+    # 原来对的 top-5 挤掉, L24/L33 还会被"撤销仲裁裁决/刑法"带出语料范围。
+    # 扩大后的候选池反思能看到全部, 缺失条文若在其中, 覆盖率会自然变完整。
+    if state.get("reflection_missing_type") == "law" and retry_count < settings.MAX_RETRIES:
+        return "retry"
+    return "generate"
 
 
 # ============================================================

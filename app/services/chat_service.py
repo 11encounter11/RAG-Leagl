@@ -126,6 +126,13 @@ def build_retrieval_info(
         "confidence_level": retrieval.get("confidence_level", "high"),
         "workflow_steps": list(retrieval.get("workflow_steps") or []),
         "reflection_score": retrieval.get("reflection_score"),
+        # P2-04: 反思的结构化判断。只有分数时, 事后无法区分"没检到"、
+        # "检到但缺例外"与"缺用户事实", 复盘时只能再猜一次。
+        "reflection_core_basis": retrieval.get("reflection_core_basis"),
+        "reflection_coverage": retrieval.get("reflection_coverage") or "",
+        "reflection_missing_type": retrieval.get("reflection_missing_type") or "",
+        "reflection_missing": list(retrieval.get("reflection_missing") or []),
+        "reflection_missing_query": retrieval.get("reflection_missing_query") or "",
         # 这一次阈值闸门到底比了什么: 尺子名、数值、是否真的生效、top1 与保留条数。
         # 只记 config 里的值不够 —— 重排没生效时那个值根本没参与比较(P2-20)。
         "threshold_usage": retrieval.get("threshold_usage") or {},
@@ -191,6 +198,11 @@ class ChatService:
                 "workflow_steps": result.get("workflow_steps", []),
                 "reflection_score": result.get("reflection_score"),
                 "reflection_note": result.get("reflection_note", ""),
+                "reflection_core_basis": result.get("reflection_core_basis"),
+                "reflection_coverage": result.get("reflection_coverage", ""),
+                "reflection_missing_type": result.get("reflection_missing_type", ""),
+                "reflection_missing": list(result.get("reflection_missing") or []),
+                "reflection_missing_query": result.get("reflection_missing_query", ""),
                 "refused": bool(result.get("refuse", False)),
                 "refuse_reason": result.get("refuse_reason", ""),
                 "domain_score": result.get("domain_score"),
@@ -208,6 +220,11 @@ class ChatService:
             "workflow_steps": ["retrieval:direct"],
             "reflection_score": None,
             "reflection_note": "",
+            "reflection_core_basis": None,
+            "reflection_coverage": "",
+            "reflection_missing_type": "",
+            "reflection_missing": [],
+            "reflection_missing_query": "",
             "refused": not nodes,
             "refuse_reason": "" if nodes else "直接检索模式未召回任何片段",
             "domain_score": None,
@@ -217,22 +234,46 @@ class ChatService:
 
     @staticmethod
     def _with_caution(answer: str, retrieval: Dict) -> str:
-        """低置信时在回答末尾追加提示。
+        """低置信或资料有缺口时, 在回答末尾追加提示。
 
         刻意写成"追加"而不是"拦截": 匹配度偏低不等于没有依据, 直接拒答会让
         正常问题也得不到帮助。但用户必须知道这条依据的可信度不高 ——
         把不确定性藏起来, 才是法律场景里最危险的做法。
+
+        P2-04 增加第二类提示: 反思已经指出"缺哪条法/缺什么条件"时, 即使答案
+        照常生成, 也要把缺口明确列出来, 防止用户把半套依据当成完整结论。
         """
-        if retrieval.get("confidence_level") != "low":
+        notes = []
+        if retrieval.get("confidence_level") == "low":
+            score = retrieval.get("domain_score")
+            shown = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
+            notes.append(
+                f"⚠️ 提示：本次检索与知识库的匹配度偏低（领域判据 {shown}），"
+                f"以上依据可能不完全适用于你描述的场景，请务必点开原文核对。"
+            )
+
+        missing = [
+            str(item).strip()
+            for item in (retrieval.get("reflection_missing") or [])
+            if str(item).strip()
+        ]
+        if missing:
+            notes.append(
+                "⚠️ 提示：现有资料未覆盖 "
+                + "；".join(missing[:3])
+                + "，相关部分请以原文或专业人士意见为准。"
+            )
+        elif retrieval.get("reflection_coverage") == "partial":
+            notes.append(
+                "⚠️ 提示：反思判定现有资料未完全覆盖问题，"
+                "请点开原文核对未明确的部分。"
+            )
+
+        if not notes:
             return answer
-        score = retrieval.get("domain_score")
-        shown = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
-        note = (
-            f"⚠️ 提示：本次检索与知识库的匹配度偏低（领域判据 {shown}），"
-            f"以上依据可能不完全适用于你描述的场景，请务必点开原文核对。"
-        )
+        note_text = "\n\n---\n" + "\n\n".join(notes)
         # 流式场景会以空 answer 调用本方法(只取提示文案), 此时不要多出空行
-        return f"{answer}\n\n---\n{note}" if answer else f"\n\n---\n{note}"
+        return f"{answer}{note_text}" if answer else note_text
 
     @staticmethod
     def _unverifiable_citations(answer: str, sources: List[Dict]) -> List[int]:
@@ -291,9 +332,10 @@ class ChatService:
         user_message: str,
         context: str,
         conversation_id: str,
+        missing: Optional[List[str]] = None,
     ) -> List[Dict[str, str]]:
         """构建发送给 LLM 的消息列表: 系统提示词 + 历史对话 + 当前问题。"""
-        messages: List[Dict[str, str]] = [build_system_prompt(context)]
+        messages: List[Dict[str, str]] = [build_system_prompt(context, missing)]
 
         db_messages = db_manager.get_messages(conversation_id, limit=20)
         for msg in db_messages[-10:]:
@@ -413,7 +455,12 @@ class ChatService:
             )
         else:
             llm = llm_router.get(model_name)
-            messages = self._build_messages(message, retrieval["context"], conversation_id)
+            messages = self._build_messages(
+                message,
+                retrieval["context"],
+                conversation_id,
+                retrieval.get("reflection_missing"),
+            )
             response_text, tokens_used = await self._generate_checked(
                 llm, messages, retrieval
             )
@@ -501,7 +548,12 @@ class ChatService:
                 )
         else:
             llm = llm_router.get(model_name)
-            messages = self._build_messages(message, retrieval["context"], conversation_id)
+            messages = self._build_messages(
+                message,
+                retrieval["context"],
+                conversation_id,
+                retrieval.get("reflection_missing"),
+            )
             try:
                 async for item in llm.chat_stream_with_usage(messages):
                     # 用量不是正文, 绝不能当作 token 片段推给前端
