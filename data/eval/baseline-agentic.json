@@ -1,29 +1,48 @@
 {
   "stale": false,
-  "created_at": "2026-10-20 16:27:53",
-  "source_report": "data/eval/reports/run-agentic-20261020-162753.json",
-  "purpose": "P2-01: agentic(工作流)路径的第二组基线。与 data/eval/baseline.json 的 direct 基线并列, 各自比较, 不互相替代。这是 P1 T-33 那条'附限制通过'的闭合动作。",
-  "caveat": "端到端召回与 direct 基线**不可直接相减**: 工作流一旦拒答就清空 reranked_docs, 这题在指标里记 0, 于是'没检到'与'检到了但反思不放行'混成一个数。实测 36 道库内题有 7 道被反思拒答(19.44%), 其中 5 道关掉闸门后 top-5 里就有正确答案。看检索质量请用 refusal_split.answered_*, 看闸门误伤请用 refusal_split.in_scope_refusal_rate, 端到端 recall 只代表用户实际拿到的结果。另: L40 的问题是'浙江省对于这条规定有没有地方性的实施办法?', '这条规定'没有指代对象, 按离线标注算库内题, 但按对话语义拒答未必错 —— 这条不宜单独当作检索缺陷的证据。",
+  "created_at": "2026-10-21 17:05:53",
+  "source_report": "data/eval/reports/run-agentic-20261021-170553.json",
+  "purpose": "agentic(工作流)路径第二组基线。P2-01 建立, P2-04 更新为“结构化反思 + 反思看生成实际候选 + 缺法条只扩 top_k + 缺口进生成”。与 direct 基线并列, 不互相替代。",
+  "caveat": "端到端召回与 direct 不可直接相减: 工作流拒答会清空候选。P2-04 后库内只有 2 道被拒(L04/L40), 放行集合从 29 扩到 34, 其中 L28/L39 是检索 top-5 未命中但被放行(带缺口), 所以 answered_recall 从 0.9655 降到 0.9118 是放行集合变大, 不是检索退步; 检索质量看 overall recall/full, 闸门看 in_scope_refusal_rate。",
   "config": {
     "mode": "agentic",
     "top_k": 5,
     "rerank": true,
+    "rerank_requested": true,
     "rerank_effective": true,
     "query_rewrite": true,
     "hyde": false,
     "domain_gate": true,
     "reflection_threshold": 0.6,
+    "reflection_rule": "core_basis+coverage;threshold=fallback",
+    "reflection_prompt": "structured: core_basis/coverage/missing_type/missing; 反思查看生成实际会拿到的全部候选",
+    "gap_retrieval": "disabled: 第一版用 missing_query 额外召回+重排导致 L05/L21/L25 被挤掉、L24/L33 被域外查询带偏; 已撤回",
     "max_retries": 2,
     "retry_plan": [
-      {"round": 0, "top_k": 5, "threshold": 0.1, "split": false},
-      {"round": 1, "top_k": 15, "threshold": 0.1, "split": false},
-      {"round": 2, "top_k": 15, "threshold": 0.1, "split": true}
+      {
+        "round": 0,
+        "top_k": 5,
+        "threshold": 0.1,
+        "split": false
+      },
+      {
+        "round": 1,
+        "top_k": 15,
+        "threshold": 0.1,
+        "split": false
+      },
+      {
+        "round": 2,
+        "top_k": 15,
+        "threshold": 0.1,
+        "split": true
+      }
     ],
     "similarity_threshold": 0.1,
     "similarity_threshold_scale": "rerank_relevance",
     "similarity_threshold_rule": "top1_gate",
     "validity_filter": true,
-    "note": "以上均从 source_report 读取, 不是手填。P2-19 已把改写与反思的判断缓存住, 两次运行同题同候选应给同一判决。"
+    "note": "以上从 source_report 读取；reflection_prompt/gap_retrieval 是本次实现的配置说明。"
   },
   "corpus": {
     "documents": 9,
@@ -34,62 +53,78 @@
     "embedding_model": "embedding-3 (智谱, 1024 维)"
   },
   "metrics": {
-    "recall_at_k": 0.7778,
-    "full_recall_at_k": 0.7222,
-    "mrr": 0.713,
-    "ndcg_at_k": 0.711,
-    "precision_at_k": 0.2111,
+    "k": 5,
+    "question_count": 52,
+    "resolvable_count": 36,
+    "unresolvable_count": 16,
+    "recall_at_k": 0.8611,
+    "full_recall_at_k": 0.8056,
+    "mrr": 0.7775,
+    "ndcg_at_k": 0.7605,
+    "precision_at_k": 0.2333,
     "stale_ratio_at_k": 0.0,
     "questions_with_stale": 0,
     "refusal_accuracy": 1.0
   },
   "refusal_split": {
     "resolvable_count": 36,
-    "answered_count": 29,
-    "refused_in_scope": 7,
-    "in_scope_refusal_rate": 0.1944,
-    "refused_ids": ["L04", "L05", "L08", "L24", "L28", "L39", "L40"],
+    "answered_count": 34,
+    "refused_in_scope": 2,
+    "in_scope_refusal_rate": 0.0556,
+    "refused_ids": [
+      "L04",
+      "L40"
+    ],
     "refused_by_kind": {
-      "colloquial": 4,
-      "term": 1,
-      "validity": 2
+      "colloquial": 1,
+      "validity": 1
     },
-    "answered_recall_at_k": 0.9655,
-    "answered_full_recall_at_k": 0.8966,
-    "answered_mrr": 0.8851,
-    "answered_ndcg_at_k": 0.8827,
-    "note": "answered_* 只统计放行的 29 题, 回答'检索本身准不准'; 它天然排除了被拒题, 不能当端到端指标用。out_of_scope 的 16 题全部被拒(1.0), 这是工作流相对 direct(0.4375)的真实优势。"
+    "answered_recall_at_k": 0.9118,
+    "answered_full_recall_at_k": 0.8529,
+    "answered_mrr": 0.8233,
+    "answered_ndcg_at_k": 0.8053,
+    "note": "answered_* 只统计放行的 34 题; 放行集合变大后该值会因纳入更难/未命中的题而下降, 不能单独当检索退步的证据。"
   },
   "by_kind": {
     "colloquial": {
       "n": 14,
-      "recall": 0.6429,
-      "full_recall": 0.5714,
-      "mrr": 0.6071,
-      "ndcg": 0.5876,
-      "answered_n": 10,
-      "answered_recall": 0.9,
-      "refused": 4
+      "recall": 0.8571,
+      "full_recall": 0.7857,
+      "mrr": 0.7643,
+      "ndcg": 0.7494,
+      "answered_n": 13,
+      "answered_recall": 0.9231,
+      "refused": 1
     },
     "compound": {
       "n": 2,
       "recall": 1.0,
       "full_recall": 0.5,
       "mrr": 0.6667,
-      "ndcg": 0.7853,
+      "ndcg": 0.602,
       "answered_n": 2,
       "answered_recall": 1.0,
+      "refused": 0
+    },
+    "out_of_scope": {
+      "n": 0,
+      "recall": 0.0,
+      "full_recall": 0.0,
+      "mrr": 0.0,
+      "ndcg": 0.0,
+      "answered_n": 0,
+      "answered_recall": 0.0,
       "refused": 0
     },
     "term": {
       "n": 18,
       "recall": 0.9444,
       "full_recall": 0.9444,
-      "mrr": 0.8796,
-      "ndcg": 0.8778,
-      "answered_n": 17,
-      "answered_recall": 1.0,
-      "refused": 1
+      "mrr": 0.8866,
+      "ndcg": 0.8713,
+      "answered_n": 18,
+      "answered_recall": 0.9444,
+      "refused": 0
     },
     "validity": {
       "n": 2,
@@ -97,70 +132,253 @@
       "full_recall": 0.0,
       "mrr": 0.0,
       "ndcg": 0.0,
-      "answered_n": 0,
+      "answered_n": 1,
       "answered_recall": 0.0,
-      "refused": 2
+      "refused": 1
     }
   },
-  "refusal_gate_diagnosis": {
-    "probe_report": "data/eval/reports/probe-agentic-refusal-20261020-163408.json",
-    "method": "对 7 道库内被拒题, 临时把 REFLECTION_THRESHOLD 置 0(仅探针进程) 让工作流保留 top-5; 改写与反思命中已有缓存, 只花查询嵌入与本地重排。逐题结果见 probe_report。",
-    "gate_induced_hits": ["L04", "L05", "L08", "L24", "L40"],
-    "genuine_misses": ["L28", "L39"],
-    "finding": "7 道误拒中 5 道检索其实已经命中(L04 命中可接受条 劳动法·第二十八条 @1; L05 劳动法·第二十五条 @5; L08 劳动法·第二十九条 @1; L24 劳动法·第八十三条 @1; L40 劳动法·第一百零六条 @3), 是反思分数没过 0.6; 只有 L28/L39 即使关掉闸门 top-5 里也没有答案。误拒高度集中在口语类: 口语 4/14 被拒, 术语 1/18, 版本 2/2。",
-    "potential_metrics": {
-      "note": "反事实: 把 5 道误拒题按探针 top-5 计入, 其余不变; 不是生产实际, 也不代表改完闸门就能拿到(还需闸门策略)。L04 只命中可接受条, 完整召回仍为 0。",
-      "overall": {
-        "recall_at_k": 0.9167,
-        "full_recall_at_k": 0.8333,
-        "mrr": 0.8111,
-        "ndcg_at_k": 0.819,
-        "precision_at_k": 0.2444,
-        "stale_ratio_at_k": 0.0,
-        "refusal_accuracy": 1.0
-      },
-      "by_kind": {
-        "colloquial": {"n": 14, "recall": 0.9286, "full_recall": 0.7857, "mrr": 0.8357, "ndcg": 0.8295},
-        "compound": {"n": 2, "recall": 1.0, "full_recall": 0.5, "mrr": 0.6667, "ndcg": 0.7853},
-        "term": {"n": 18, "recall": 0.9444, "full_recall": 0.9444, "mrr": 0.8796, "ndcg": 0.8778},
-        "validity": {"n": 2, "recall": 0.5, "full_recall": 0.5, "mrr": 0.1667, "ndcg": 0.25}
-      }
-    }
+  "comparison_to_previous_agentic": {
+    "previous_source": "data/eval/reports/run-agentic-20261020-162753.json (P2-01)",
+    "previous_metrics": {
+      "recall_at_k": 0.7778,
+      "full_recall_at_k": 0.7222,
+      "mrr": 0.713,
+      "ndcg_at_k": 0.711,
+      "precision_at_k": 0.2111,
+      "stale_ratio_at_k": 0.0,
+      "refusal_accuracy": 1.0
+    },
+    "current_metrics": {
+      "recall_at_k": 0.8611,
+      "full_recall_at_k": 0.8056,
+      "mrr": 0.7775,
+      "ndcg_at_k": 0.7605,
+      "precision_at_k": 0.2333,
+      "stale_ratio_at_k": 0.0,
+      "refusal_accuracy": 1.0
+    },
+    "deltas": {
+      "recall_at_k": 0.0833,
+      "full_recall_at_k": 0.0834,
+      "mrr": 0.0645,
+      "ndcg_at_k": 0.0495
+    },
+    "previous_refusal_split": {
+      "answered_count": 29,
+      "refused_in_scope": 7,
+      "in_scope_refusal_rate": 0.1944,
+      "answered_recall_at_k": 0.9655
+    },
+    "current_refusal_split": {
+      "answered_count": 34,
+      "refused_in_scope": 2,
+      "in_scope_refusal_rate": 0.0556,
+      "answered_recall_at_k": 0.9118
+    },
+    "interpretation": "端到端 Recall +0.0833、完整召回 +0.0834; 误拒 7→2。放行集合 29→34, answered_recall 0.9655→0.9118 是分母变化, 不是检索变差。"
   },
   "comparison_to_direct": {
-    "direct_source": "data/eval/reports/run-direct-20261020-151649.json",
-    "direct_baseline": "data/eval/baseline.json",
+    "direct_source": "data/eval/baseline.json",
     "direct_metrics": {
+      "k": 5,
+      "question_count": 52,
+      "resolvable_count": 36,
+      "unresolvable_count": 16,
       "recall_at_k": 0.9167,
       "full_recall_at_k": 0.8056,
       "mrr": 0.7315,
       "ndcg_at_k": 0.7612,
       "precision_at_k": 0.25,
       "stale_ratio_at_k": 0.0,
+      "questions_with_stale": 0,
       "refusal_accuracy": 0.4375
     },
-    "why_not_subtractable": "direct 的 refusal_accuracy 只是'检索回来是空'的比例, 没有反思节点; agentic 的 1.0 是靠领域闸门+反思+重试主动拒答。两者的 recall 分母相同, 但 agentic 的 0 里混着 7 道主动拒答。",
     "end_to_end_diffs": [
-      "口语: direct 0.8571 -> agentic 0.6429 (更差), 但关闸门潜在 0.9286 —— 差额主要是 4 道口语题被反思误拒, 不是改写/检索变差",
-      "术语: direct 1.0 -> agentic 0.9444, 差在 L28; L28 关闸门后仍无答案, 是检索本身的问题",
-      "版本: direct 0.5 -> agentic 0.0; L40 是闸门误拒(潜在命中), L39 是两边都漏",
-      "复合: direct 与 agentic 都是 Recall 1.0, 但 MRR 1.0 -> 0.6667 (n=2, 不具统计意义)",
-      "超纲拒答: direct 0.4375 -> agentic 1.0; 这是工作流的真实增益"
+      "口语: direct 0.8571 -> agentic 0.8571 (持平; P2-04 目标达成)",
+      "术语: direct 1.0 -> agentic 0.9444 (差在 L28; top-5 未命中第三十条, 但生成上下文 15 条里有它)",
+      "版本: direct 0.5 -> agentic 0.0 (L39 缺用户合同事实; L40 指代不明; 两者留给 HITL)",
+      "复合: 两边 Recall 都是 1.0",
+      "超纲拒答: direct 0.4375 -> agentic 1.0 (工作流真实增益)"
     ],
-    "flips": {
-      "agentic_fixed": ["L12"],
-      "agentic_broke": ["L28", "L30"],
-      "refused_despite_direct_hit": ["L04", "L08", "L24", "L28", "L40"],
-      "both_miss": ["L39"],
-      "note": "L05 在 direct 漏检, agentic 检索命中但被反思拒答 —— 它既不是'agentic 修好'也不是'agentic 弄坏', 而是检索修好、闸门没放行。"
-    }
+    "why_not_subtractable": "direct 的 refusal_accuracy 只是“检索回来是空”的比例，没有反思节点；agentic 的 1.0 是靠领域闸门+反思+重试主动拒答。"
+  },
+  "reflection_diagnosis": {
+    "method": "P2-04 把反思视野从 top-5 扩到生成实际会拿到的全部候选(重试后 15 条), 并把判据拆成 core_basis/coverage/missing_type; 缺法条时只扩大 top_k, 不再用 missing_query 重排。",
+    "examples": {
+      "L08": "top-5 命中第二十九条/@1、第六十一条/@2; 重试后 15 条里《劳动合同法》第三十九条第 14 名, 反思 coverage=complete; 答案可同时覆盖保护与例外。",
+      "L28": "top-5 未命中 required 第三十条; 重试后 15 条里第三十条第 14 名, 反思 coverage=complete; 生成上下文完整, 但 recall@5=0。",
+      "L39": "缺的是用户合同事实, missing_type=user_fact, 无可检索缺口; 生成只拿到 top-5, 缺第十六条, 答案带缺口提示; 需 HITL。",
+      "L04": "15 条里有《劳动法》第二十五条第 11 名, 但反思仍判 core_basis=false(0.00)并拒答; 缺“辞退理由”等用户事实, 需 HITL。",
+      "L40": "“这条规定”指代不明, missing_type=ambiguous, 拒答; 需 HITL。"
+    },
+    "rejected_attempt": "第一版用 missing_query 做额外召回+重排: 全量 Recall 0.7500, L05/L21/L25 原 top-5 被挤掉, L24/L33 被“撤销仲裁裁决/刑法”带出语料并拒答; 报告 run-agentic-20261021-164208.json, 已撤回。"
   },
   "remaining_misses": [
-    {"id": "L28", "question": "受了工伤能享受哪些待遇？", "note": "关闸门后 top-5 仍无 工伤保险条例 第三十条/第三十三条/第三十五条; 真检索缺口"},
-    {"id": "L30", "question": "工会能替我向公司讨说法吗？", "note": "放行后 top-5 无 劳动法 第八十八条/第三十条/第七条; 改写后的检索被表面主题带走"},
-    {"id": "L39", "question": "这份劳动合同是2015年签的，现在还有效吗？条款有没有被修订过？", "note": "关闸门后仍无 劳动法 第十六条; 版本类问题的检索缺口, direct 同样漏"}
+    {
+      "id": "L04",
+      "kind": "colloquial",
+      "question": "我试用期还没过就被辞退了，试用期内被辞退有经济补偿吗？",
+      "required": [
+        "第二十五条"
+      ],
+      "acceptable": [
+        "第二十八条",
+        "第三十二条"
+      ],
+      "top5": [],
+      "refused": true,
+      "reflection_core_basis": false,
+      "reflection_coverage": "none",
+      "reflection_missing_type": "unknown",
+      "note": "反思重试 2 次仍判 core_basis=false（0.00）并拒答；生成候选 15 条里其实有《劳动法》第二十五条（第 11），但缺“辞退理由”等用户事实，模型认为无法判断是否应付补偿。留给 HITL（P2-22）。"
+    },
+    {
+      "id": "L28",
+      "kind": "term",
+      "question": "受了工伤能享受哪些待遇？",
+      "required": [
+        "第三十条"
+      ],
+      "acceptable": [
+        "第三十三条",
+        "第三十五条"
+      ],
+      "top5": [
+        "工伤保险条例·第三十七条",
+        "工伤保险条例·第四十二条",
+        "社会保险法·第四十三条",
+        "社会保险法·第三十九条",
+        "工伤保险条例·第三十六条"
+      ],
+      "refused": false,
+      "reflection_core_basis": true,
+      "reflection_coverage": "complete",
+      "reflection_missing_type": "none",
+      "note": "top-5 未命中 required 第三十条，但重试后生成上下文（15 条）里第三十条第 14 名，反思 coverage=complete；recall@5=0 是 top-k 指标口径，不代表答案缺依据。"
+    },
+    {
+      "id": "L30",
+      "kind": "colloquial",
+      "question": "工会能替我向公司讨说法吗？",
+      "required": [
+        "第八十八条"
+      ],
+      "acceptable": [
+        "第三十条",
+        "第七条"
+      ],
+      "top5": [
+        "劳动合同法·第六条",
+        "劳动合同法·第五十六条",
+        "劳动争议调解仲裁法·第四条",
+        "劳动合同法·第七十八条",
+        "劳动法·第八十条"
+      ],
+      "refused": false,
+      "reflection_core_basis": true,
+      "reflection_coverage": "complete",
+      "reflection_missing_type": "none",
+      "note": "检索缺口：top-5 为工会/调解类条文，未命中 required；不是反思误拒（已放行）。"
+    },
+    {
+      "id": "L39",
+      "kind": "validity",
+      "question": "这份劳动合同是2015年签的，现在还有效吗？条款有没有被修订过？",
+      "required": [
+        "第十六条"
+      ],
+      "acceptable": [
+        "第十七条"
+      ],
+      "top5": [
+        "劳动合同法·第三十五条",
+        "劳动合同法·第三十四条",
+        "劳动合同法·第二十七条",
+        "劳动合同法·第九十七条",
+        "劳动法·第十八条"
+      ],
+      "refused": false,
+      "reflection_core_basis": true,
+      "reflection_coverage": "partial",
+      "reflection_missing_type": "user_fact",
+      "note": "反思判 missing_type=user_fact（合同期限/变更事实），无缺失查询；生成上下文只有 5 条、缺第十六条，答案带缺口提示。留给 HITL（P2-22）。"
+    },
+    {
+      "id": "L40",
+      "kind": "validity",
+      "question": "浙江省对于这条规定有没有地方性的实施办法？",
+      "required": [
+        "第一百零六条"
+      ],
+      "acceptable": [],
+      "top5": [],
+      "refused": true,
+      "reflection_core_basis": false,
+      "reflection_coverage": "none",
+      "reflection_missing_type": "ambiguous",
+      "note": "指代不明（“这条规定”），反思 core_basis=false、missing_type=ambiguous；重试 2 次后拒答。留给 HITL（P2-22）。"
+    }
   ],
   "gate_rule_recommendation": {
-    "note": "本基线把检索质量与答/不答拆成两条闸门: 检索看 answered_recall_at_k(不得低于本文件的 0.9655) + in_scope_refusal_rate(不得高于 0.1944); 端到端 recall 作为用户可见结果单独记录但不单独用于判定检索退步。**这只是建议, 是否按此换门禁 C 由用户定(D-7 同类决定)。**"
+    "note": "检索质量看 overall recall/full (36 道可判定题, 不受放行集合变化影响); 闸门伤害看 in_scope_refusal_rate (当前 2/36=0.0556); answered_recall 只作诊断, 因为它随放行集合组成变化, 不能单独当门槛。端到端 recall 代表用户实际结果, 不单独用于判定检索退步。",
+    "next": "P2-22 HITL 处理 L04/L39/L40 这类缺用户事实/指代不明; 缺口检索方案需 append-only + 域外保护 + A/B 后再试, 不能直接用 missing_query 重排。"
+  },
+  "history": {
+    "p2_01_baseline": {
+      "source": "data/eval/reports/run-agentic-20261020-162753.json",
+      "metrics": {
+        "recall_at_k": 0.7778,
+        "full_recall_at_k": 0.7222,
+        "mrr": 0.713,
+        "ndcg_at_k": 0.711,
+        "precision_at_k": 0.2111,
+        "stale_ratio_at_k": 0.0,
+        "refusal_accuracy": 1.0
+      },
+      "refusal_split": {
+        "answered_count": 29,
+        "refused_in_scope": 7,
+        "in_scope_refusal_rate": 0.1944,
+        "answered_recall_at_k": 0.9655
+      }
+    },
+    "p2_04_prompt_only": {
+      "source": "data/eval/reports/run-agentic-20261020-171221.json",
+      "metrics": {
+        "recall_at_k": 0.8611,
+        "full_recall_at_k": 0.8056,
+        "mrr": 0.7741,
+        "ndcg_at_k": 0.7773,
+        "precision_at_k": 0.2333,
+        "stale_ratio_at_k": 0.0,
+        "refusal_accuracy": 1.0
+      },
+      "refusal_split": {
+        "answered_count": 34,
+        "refused_in_scope": 2,
+        "in_scope_refusal_rate": 0.0556,
+        "answered_recall_at_k": 0.9118
+      },
+      "note": "只改提示、未做结构化缺口; 与最终结果 Recall/full 相同, MRR/NDCG 略不同。"
+    },
+    "p2_04_gap_query_attempt": {
+      "source": "data/eval/reports/run-agentic-20261021-164208.json",
+      "metrics": {
+        "recall_at_k": 0.75,
+        "full_recall_at_k": 0.6944,
+        "mrr": 0.6575,
+        "ndcg_at_k": 0.6512,
+        "precision_at_k": 0.2111,
+        "stale_ratio_at_k": 0.0,
+        "refusal_accuracy": 1.0
+      },
+      "refusal_split": {
+        "answered_count": 33,
+        "refused_in_scope": 3,
+        "in_scope_refusal_rate": 0.0833,
+        "answered_recall_at_k": 0.8182
+      },
+      "note": "已撤回: 缺口查询重排挤掉正确 top-5, 并引入域外条文。"
+    }
   }
 }
